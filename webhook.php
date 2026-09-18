@@ -29,22 +29,32 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     }
 
     $data = json_decode($input, true);
-
     http_response_code(200); // Responder OK a Meta inmediatamente
 
     // Procesar todos los mensajes del payload (no solo el primero)
     $mensajes = $data['entry'][0]['changes'][0]['value']['messages'] ?? [];
+
     foreach ($mensajes as $msg) {
         $from = $msg['from'];
         $type = $msg['type'];
 
         $respuestaId = null;
+        $textoLibre  = null;
+
         if ($type === 'interactive') {
+            // Botones de respuesta rápida (máx. 3 opciones)
             $respuestaId = $msg['interactive']['button_reply']['id'] ?? null;
+            // Mensajes de lista (hasta 10 opciones, usados para las franjas de la cita)
+            if ($respuestaId === null) {
+                $respuestaId = $msg['interactive']['list_reply']['id'] ?? null;
+            }
+        } elseif ($type === 'text') {
+            // Texto libre (ej: la URL del sitio web que el usuario escribe)
+            $textoLibre = $msg['text']['body'] ?? null;
         }
 
         // Ejecutar el motor de calificación en MySQL
-        procesarCalificacion($from, $respuestaId);
+        procesarCalificacion($from, $respuestaId, $textoLibre);
     }
     exit;
 }

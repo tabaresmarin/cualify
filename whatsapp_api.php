@@ -62,6 +62,37 @@ function enviarBotonesWhatsApp($to, $textoMensaje, $botones) {
 }
 
 /**
+ * Envía un mensaje de lista interactiva (hasta 10 filas en total, repartidas en secciones).
+ * Útil para ofrecer varias opciones que no caben en botones de respuesta rápida (máx. 3).
+ *
+ * @param string $to            Número destino
+ * @param string $textoMensaje  Cuerpo del mensaje
+ * @param string $textoBoton    Texto del botón que abre la lista (máx. 20 caracteres)
+ * @param array  $secciones     [
+ *                                 [
+ *                                   'title' => 'Lunes 22 sep', // máx 24 caracteres
+ *                                   'rows'  => [
+ *                                     ['id' => 'slot_2026-09-22_10:00', 'title' => '10:00 am', 'description' => ''],
+ *                                   ]
+ *                                 ],
+ *                                 ...
+ *                               ]
+ */
+function enviarListaWhatsApp($to, $textoMensaje, $textoBoton, $secciones) {
+    return enviarMensajeWhatsApp($to, [
+        'type'        => 'interactive',
+        'interactive' => [
+            'type'   => 'list',
+            'body'   => ['text' => $textoMensaje],
+            'action' => [
+                'button'   => $textoBoton,
+                'sections' => $secciones,
+            ],
+        ],
+    ]);
+}
+
+/**
  * Envía un mensaje de texto simple.
  */
 function enviarTextoWhatsApp($to, $textoMensaje) {
@@ -80,11 +111,24 @@ function enviarTextoWhatsApp($to, $textoMensaje) {
  * @param string $codigoIdioma     Código de idioma tal como está en la plantilla (ej: "en", "es", "es_CO", "en_US")
  * @param array  $parametros       Parámetros de texto para el BODY (en orden, {{1}}, {{2}}, ...)
  * @param array  $botones          Opcional. Componentes de botón, uno por botón dinámico que tenga la plantilla.
- *                                 Ej: [
+ *
+ *                                 Para botones 'url' / 'copy_code' (type=text):
+ *                                 [
  *                                   [
- *                                     'sub_type' => 'url',       // 'url' | 'quick_reply' | 'flow' | 'copy_code'
- *                                     'index'    => 0,           // posición del botón en la plantilla (0-based)
- *                                     'parametros' => ['123']    // valores dinámicos que requiera ese botón
+ *                                     'sub_type'   => 'url',
+ *                                     'index'      => 0,
+ *                                     'parametros' => ['valor-dinamico']
+ *                                   ]
+ *                                 ]
+ *
+ *                                 Para botones de tipo 'flow' (SIEMPRE deben declararse,
+ *                                 tengan o no datos dinámicos), usan type=action:
+ *                                 [
+ *                                   [
+ *                                     'sub_type'   => 'flow',
+ *                                     'index'      => 0,
+ *                                     'flow_token' => 'unused', // o un token único de sesión que generes tú
+ *                                     'flow_action_data' => []  // opcional: datos iniciales para la primera pantalla
  *                                   ]
  *                                 ]
  */
@@ -124,11 +168,26 @@ function enviarPlantillaWhatsApp($to, $nombrePlantilla, $codigoIdioma = "es", $p
             "index"    => (string)$btn['index'],
         ];
 
-        if (!empty($btn['parametros'])) {
+        if ($btn['sub_type'] === 'flow') {
+            // Los botones de tipo Flow SIEMPRE requieren este componente,
+            // incluso si el Flow no necesita datos iniciales.
+            $action = [
+                "flow_token" => $btn['flow_token'] ?? 'unused',
+            ];
+            if (!empty($btn['flow_action_data'])) {
+                $action['flow_action_data'] = $btn['flow_action_data'];
+            }
+
+            $buttonComponent["parameters"] = [
+                [
+                    "type"   => "action",
+                    "action" => $action,
+                ]
+            ];
+        } elseif (!empty($btn['parametros'])) {
+            // Botones 'url' o 'copy_code' con valor dinámico: type "text"
             $buttonParams = [];
             foreach ($btn['parametros'] as $val) {
-                // Para 'url' y 'copy_code' normalmente se usa type "text";
-                // para 'flow' se usa type "action" con un payload (ver docs de Meta si aplica).
                 $buttonParams[] = [
                     "type" => "text",
                     "text" => (string)$val
