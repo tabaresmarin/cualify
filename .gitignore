@@ -1,4 +1,11 @@
 .env
-delivery.log
+vendor/
+
+# Secrets: nunca versionar llaves ni credenciales
+private.pem
+public.pem
+caldav-*.json
+
+# Artefactos / respaldos
 version_0.zip
-caldav-333715-85f56a0e9869.json
+delivery.log

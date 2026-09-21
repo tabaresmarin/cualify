@@ -133,6 +133,8 @@ function enviarTextoWhatsApp($to, $textoMensaje) {
  *                                 ]
  */
 function enviarPlantillaWhatsApp($to, $nombrePlantilla, $codigoIdioma = "es", $parametros = [], $botones = []) {
+    $url = "https://graph.facebook.com/v19.0/" . WA_PHONE_NUMBER_ID . "/messages";
+
     $templateData = [
         "name" => $nombrePlantilla,
         "language" => [
@@ -203,8 +205,28 @@ function enviarPlantillaWhatsApp($to, $nombrePlantilla, $codigoIdioma = "es", $p
         $templateData["components"] = $components;
     }
 
-    return enviarMensajeWhatsApp($to, [
-        "type"     => "template",
-        "template" => $templateData,
+    $payload = [
+        "messaging_product" => "whatsapp",
+        "recipient_type"    => "individual",
+        "to"                => $to,
+        "type"              => "template",
+        "template"          => $templateData
+    ];
+
+    $ch = curl_init($url);
+    curl_setopt_array($ch, [
+        CURLOPT_HTTPHEADER => [
+            'Authorization: Bearer ' . WA_ACCESS_TOKEN,
+            'Content-Type: application/json'
+        ],
+        CURLOPT_POST           => true,
+        CURLOPT_POSTFIELDS     => json_encode($payload, JSON_UNESCAPED_UNICODE),
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_SSL_VERIFYPEER => true
     ]);
+
+    $respuesta = curl_exec($ch);
+    curl_close($ch);
+
+    return $respuesta;
 }

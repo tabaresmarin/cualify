@@ -66,6 +66,7 @@ function construirSeccionesFranjas($cantidadDias = 5) {
 /**
  * Parsea el id de fila seleccionado ("slot_2026-09-22_10:00") en un DateTime de inicio
  * y uno de fin (60 minutos de duración), ya en la zona horaria de la cita.
+ * Usado por el flujo CONVERSACIONAL (botones/listas de WhatsApp vía lead_qualifier.php).
  * Devuelve null si el id no tiene el formato esperado o si la fecha ya no es un día hábil futuro.
  */
 function parsearFranjaSeleccionada($rowId) {
@@ -81,11 +82,66 @@ function parsearFranjaSeleccionada($rowId) {
 
     $diaSemanaISO = (int) $inicio->format('N');
     if ($diaSemanaISO > 5) {
-        return null; // por seguridad, nunca debería pasar ya que solo generamos días hábiles
+        return null;
     }
 
     $fin = clone $inicio;
     $fin->modify('+60 minutes');
 
+    return ['inicio' => $inicio, 'fin' => $fin];
+}
+
+const DIAS_SEMANA_LARGO_ES = [
+    1 => 'Lunes', 2 => 'Martes', 3 => 'Miércoles', 4 => 'Jueves', 5 => 'Viernes', 6 => 'Sábado', 7 => 'Domingo',
+];
+
+/**
+ * Formatea un DateTime como "Lunes 22 sep, 10:00 a.m." (usado en las etiquetas del Flow).
+ */
+function formatearFranjaLegible(DateTime $dt) {
+    $diaSemana = DIAS_SEMANA_LARGO_ES[(int) $dt->format('N')];
+    $mes       = MESES_ES[(int) $dt->format('n')];
+    $h24       = (int) $dt->format('H');
+    $h12       = $h24 % 12 === 0 ? 12 : $h24 % 12;
+    $ampm      = $h24 >= 12 ? 'p.m.' : 'a.m.';
+    return "{$diaSemana} {$dt->format('d')} {$mes}, {$h12}:{$dt->format('i')} {$ampm}";
+}
+
+/**
+ * Construye la lista PLANA de franjas (para el campo "slots" del Flow nativo, distinto
+ * del formato de secciones que usa el mensaje de lista de WhatsApp conversacional).
+ * Cada elemento: ['id' => '2026-09-22T10:00:00-05:00', 'title' => 'Lunes 22 sep, 10:00 a.m.']
+ */
+function construirSlotsPlanoFlow($cantidadDias = 5) {
+    $slots = [];
+    foreach (obtenerProximosDiasHabiles($cantidadDias) as $dia) {
+        foreach (CITA_HORAS_FIJAS as $hora) {
+            [$h, $m] = explode(':', $hora);
+            $dt = clone $dia;
+            $dt->setTime((int) $h, (int) $m, 0);
+            $slots[] = [
+                'id'    => $dt->format('Y-m-d\TH:i:sP'), // ISO-8601 con offset, ej: 2026-09-22T10:00:00-05:00
+                'title' => formatearFranjaLegible($dt),
+            ];
+        }
+    }
+    return $slots;
+}
+
+/**
+ * Parsea el id ISO-8601 seleccionado en APPOINTMENT_SLOTS y devuelve inicio/fin (60 min).
+ */
+function parsearSlotFlow($isoId) {
+    try {
+        $inicio = new DateTime($isoId);
+    } catch (Exception $e) {
+        return null;
+    }
+    $diaSemanaISO = (int) $inicio->format('N');
+    if ($diaSemanaISO > 5) {
+        return null;
+    }
+    $fin = clone $inicio;
+    $fin->modify('+60 minutes');
     return ['inicio' => $inicio, 'fin' => $fin];
 }

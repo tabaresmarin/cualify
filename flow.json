@@ -1,0 +1,502 @@
+{
+  "version": "7.3",
+  "data_api_version": "3.0",
+  "routing_model": {
+    "JOIN_NOW": ["CATEGORIES", "TERMS_AND_CONDITIONS"],
+    "TERMS_AND_CONDITIONS": [],
+    "CATEGORIES": ["HAS_WEBSITE"],
+    "HAS_WEBSITE": ["WEBSITE_URL"],
+    "WEBSITE_URL": ["PAGESPEED_RESULT"],
+    "PAGESPEED_RESULT": ["APPOINTMENT_SLOTS"],
+    "APPOINTMENT_SLOTS": ["SUCCESS"],
+    "SUCCESS": []
+  },
+  "screens": [
+    {
+      "id": "JOIN_NOW",
+      "title": "Cualify EISO",
+      "data": {},
+      "layout": {
+        "type": "SingleColumnLayout",
+        "children": [
+          {
+            "type": "Form",
+            "name": "form",
+            "children": [
+              {
+                "type": "TextSubheading",
+                "text": "¿Quieres actualizar tu sitio Web o Tienda Virtual?"
+              },
+              {
+                "type": "TextInput",
+                "name": "name",
+                "label": "Nombre",
+                "input-type": "text",
+                "required": true
+              },
+              {
+                "type": "TextInput",
+                "label": "Email",
+                "name": "email",
+                "input-type": "email",
+                "required": true
+              },
+              {
+                "type": "OptIn",
+                "label": "Acepto los Términos y Condiciones.",
+                "required": true,
+                "name": "tos_optin",
+                "on-click-action": {
+                  "name": "navigate",
+                  "payload": {},
+                  "next": {
+                    "name": "TERMS_AND_CONDITIONS",
+                    "type": "screen"
+                  }
+                }
+              },
+              {
+                "type": "OptIn",
+                "label": "Mantenme informado acerca de ofertas y promociones",
+                "name": "marketing_optin"
+              },
+              {
+                "type": "Footer",
+                "label": "Continuar",
+                "on-click-action": {
+                  "name": "navigate",
+                  "next": {
+                    "type": "screen",
+                    "name": "CATEGORIES"
+                  },
+                  "payload": {
+                    "name": "${form.name}",
+                    "email": "${form.email}",
+                    "tos_optin": "${form.tos_optin}",
+                    "marketing_optin": "${form.marketing_optin}"
+                  }
+                }
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "TERMS_AND_CONDITIONS",
+      "title": "Términos y Condiciones",
+      "data": {},
+      "layout": {
+        "type": "SingleColumnLayout",
+        "children": [
+          {
+            "type": "TextHeading",
+            "text": "Nuestros Términos y Condiciones"
+          },
+          {
+            "type": "TextSubheading",
+            "text": "Uso de los datos"
+          },
+          {
+            "type": "TextBody",
+            "text": "Para clientes y prospectos recolectamos los siguientes datos de empleados de dichas empresas, entre los cuales se encuentran: Nombre, empresa en la que trabaja, dirección de trabajo, celular, género, fecha de nacimiento, email, teléfono de trabajo fijo y el RUT. En relación con la base de datos de proveedores, recolectamos la siguiente información: Nombre, empresa en la que trabaja, dirección de trabajo, celular, género, fecha de nacimiento, email, teléfono de trabajo fijo, RUT, cédula de ciudadanía y número de cuentas bancarias."
+          },
+          {
+            "type": "TextSubheading",
+            "text": "Política de Privacidad"
+          },
+          {
+            "type": "TextBody",
+            "text": "Constitución Política, artículo 15. Ley 1266 de 2008 Ley 1581 de 2012 Decretos Reglamentarios 1727 de 2009 y 2952 de 2010, Decreto Reglamentario parcial 1377 de 2013. Más informacion en https://eiso.com.co/politica-tratamiento-de-datos/"
+          },
+          {
+            "type": "TextCaption",
+            "text": "Toca la flecha de la parte superior para volver al formulario."
+          }
+        ]
+      }
+    },
+    {
+      "id": "CATEGORIES",
+      "title": "Selecciona",
+      "data": {
+        "name": { "type": "string", "__example__": "Example" },
+        "email": { "type": "string", "__example__": "Example" },
+        "tos_optin": { "type": "boolean", "__example__": false },
+        "marketing_optin": { "type": "boolean", "__example__": false }
+      },
+      "layout": {
+        "type": "SingleColumnLayout",
+        "children": [
+          {
+            "type": "Form",
+            "name": "form",
+            "children": [
+              {
+                "type": "TextSubheading",
+                "text": "Dejanos conocer tu interés en nuestros servicios"
+              },
+              {
+                "type": "CheckboxGroup",
+                "label": "Selecciona las opciones que necesites",
+                "required": true,
+                "name": "categories",
+                "data-source": [
+                  { "id": "actualizacion_web", "title": "Actualización Sitio Web" },
+                  { "id": "tienda_virtual", "title": "Tienda Virtual" },
+                  { "id": "marketing", "title": "Marketing Digital" },
+                  { "id": "primera_vez", "title": "Primer Sitio Web/Tienda" },
+                  { "id": "otros", "title": "Otros" }
+                ]
+              },
+              {
+                "type": "Footer",
+                "label": "Continuar",
+                "on-click-action": {
+                  "name": "navigate",
+                  "next": {
+                    "type": "screen",
+                    "name": "HAS_WEBSITE"
+                  },
+                  "payload": {
+                    "name": "${data.name}",
+                    "email": "${data.email}",
+                    "tos_optin": "${data.tos_optin}",
+                    "marketing_optin": "${data.marketing_optin}",
+                    "categories": "${form.categories}"
+                  }
+                }
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "HAS_WEBSITE",
+      "title": "¿Ya tienes sitio web?",
+      "data": {
+        "name": { "type": "string", "__example__": "Example" },
+        "email": { "type": "string", "__example__": "Example" },
+        "tos_optin": { "type": "boolean", "__example__": false },
+        "marketing_optin": { "type": "boolean", "__example__": false },
+        "categories": {
+          "type": "array",
+          "items": { "type": "string" },
+          "__example__": ["actualizacion_web"]
+        }
+      },
+      "layout": {
+        "type": "SingleColumnLayout",
+        "children": [
+          {
+            "type": "Form",
+            "name": "form",
+            "children": [
+              {
+                "type": "TextSubheading",
+                "text": "Cuéntanos un poco sobre tu sitio actual"
+              },
+              {
+                "type": "RadioButtonsGroup",
+                "label": "¿Ya tienes un sitio web?",
+                "required": true,
+                "name": "has_website",
+                "data-source": [
+                  { "id": "si", "title": "Sí, ya tengo sitio web" },
+                  { "id": "no", "title": "No, aún no tengo sitio web" }
+                ]
+              },
+              {
+                "type": "RadioButtonsGroup",
+                "label": "¿Hace cuánto tiempo no lo actualizas?",
+                "required": true,
+                "name": "last_update",
+                "data-source": [
+                  { "id": "menos_1", "title": "Menos de 1 año" },
+                  { "id": "1_2", "title": "Entre 1 y 2 años" },
+                  { "id": "mas_2", "title": "Más de 2 años sin actualizar" },
+                  { "id": "nunca", "title": "Nunca lo he actualizado" }
+                ]
+              },
+              {
+                "type": "Footer",
+                "label": "Continuar",
+                "on-click-action": {
+                  "name": "navigate",
+                  "next": {
+                    "type": "screen",
+                    "name": "WEBSITE_URL"
+                  },
+                  "payload": {
+                    "name": "${data.name}",
+                    "email": "${data.email}",
+                    "tos_optin": "${data.tos_optin}",
+                    "marketing_optin": "${data.marketing_optin}",
+                    "categories": "${data.categories}",
+                    "has_website": "${form.has_website}",
+                    "last_update": "${form.last_update}"
+                  }
+                }
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "WEBSITE_URL",
+      "title": "URL del sitio",
+      "data": {
+        "name": { "type": "string", "__example__": "Example" },
+        "email": { "type": "string", "__example__": "Example" },
+        "tos_optin": { "type": "boolean", "__example__": false },
+        "marketing_optin": { "type": "boolean", "__example__": false },
+        "categories": {
+          "type": "array",
+          "items": { "type": "string" },
+          "__example__": ["actualizacion_web"]
+        },
+        "has_website": { "type": "string", "__example__": "si" },
+        "last_update": { "type": "string", "__example__": "mas_2" }
+      },
+      "layout": {
+        "type": "SingleColumnLayout",
+        "children": [
+          {
+            "type": "Form",
+            "name": "form",
+            "children": [
+              {
+                "type": "TextSubheading",
+                "text": "Ingresa la URL de tu sitio web para analizar su rendimiento"
+              },
+              {
+                "type": "TextInput",
+                "name": "website_url",
+                "label": "URL del sitio (ej: https://misitio.com)",
+                "input-type": "text",
+                "required": true
+              },
+              {
+                "type": "Footer",
+                "label": "Analizar rendimiento",
+                "on-click-action": {
+                  "name": "data_exchange",
+                  "payload": {
+                    "name": "${data.name}",
+                    "email": "${data.email}",
+                    "tos_optin": "${data.tos_optin}",
+                    "marketing_optin": "${data.marketing_optin}",
+                    "categories": "${data.categories}",
+                    "has_website": "${data.has_website}",
+                    "last_update": "${data.last_update}",
+                    "website_url": "${form.website_url}"
+                  }
+                }
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "PAGESPEED_RESULT",
+      "title": "Resultado del análisis",
+      "data": {
+        "name": { "type": "string", "__example__": "Example" },
+        "email": { "type": "string", "__example__": "Example" },
+        "tos_optin": { "type": "boolean", "__example__": false },
+        "marketing_optin": { "type": "boolean", "__example__": false },
+        "categories": {
+          "type": "array",
+          "items": { "type": "string" },
+          "__example__": ["actualizacion_web"]
+        },
+        "has_website": { "type": "string", "__example__": "si" },
+        "last_update": { "type": "string", "__example__": "mas_2" },
+        "website_url": { "type": "string", "__example__": "https://misitio.com" },
+        "performance_score": { "type": "number", "__example__": 42 },
+        "score_bucket": { "type": "string", "__example__": "muy_necesitado" },
+        "score_message": { "type": "string", "__example__": "Tu sitio tiene un rendimiento crítico..." }
+      },
+      "layout": {
+        "type": "SingleColumnLayout",
+        "children": [
+          {
+            "type": "Form",
+            "name": "form",
+            "children": [
+              {
+                "type": "TextHeading",
+                "text": "Diagnóstico de tu sitio"
+              },
+              {
+                "type": "TextBody",
+                "text": "Analizamos ${data.website_url} con PageSpeed Insights."
+              },
+              {
+                "type": "TextSubheading",
+                "text": "Puntaje de rendimiento: ${data.performance_score}/100"
+              },
+              {
+                "type": "TextBody",
+                "text": "${data.score_message}"
+              },
+              {
+                "type": "Footer",
+                "label": "Agendar cita con un asesor",
+                "on-click-action": {
+                  "name": "data_exchange",
+                  "payload": {
+                    "name": "${data.name}",
+                    "email": "${data.email}",
+                    "tos_optin": "${data.tos_optin}",
+                    "marketing_optin": "${data.marketing_optin}",
+                    "categories": "${data.categories}",
+                    "has_website": "${data.has_website}",
+                    "last_update": "${data.last_update}",
+                    "website_url": "${data.website_url}",
+                    "performance_score": "${data.performance_score}",
+                    "score_bucket": "${data.score_bucket}",
+                    "action": "fetch_slots"
+                  }
+                }
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "APPOINTMENT_SLOTS",
+      "title": "Agenda tu cita",
+      "data": {
+        "name": { "type": "string", "__example__": "Example" },
+        "email": { "type": "string", "__example__": "Example" },
+        "tos_optin": { "type": "boolean", "__example__": false },
+        "marketing_optin": { "type": "boolean", "__example__": false },
+        "categories": {
+          "type": "array",
+          "items": { "type": "string" },
+          "__example__": ["actualizacion_web"]
+        },
+        "has_website": { "type": "string", "__example__": "si" },
+        "last_update": { "type": "string", "__example__": "mas_2" },
+        "website_url": { "type": "string", "__example__": "https://misitio.com" },
+        "performance_score": { "type": "number", "__example__": 42 },
+        "score_bucket": { "type": "string", "__example__": "muy_necesitado" },
+        "slots": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": { "type": "string" },
+              "title": { "type": "string" }
+            }
+          },
+          "__example__": [
+            { "id": "2026-09-22T10:00:00-05:00", "title": "Lunes 22 sep, 10:00 a.m." },
+            { "id": "2026-09-22T15:00:00-05:00", "title": "Lunes 22 sep, 3:00 p.m." },
+            { "id": "2026-09-23T11:00:00-05:00", "title": "Martes 23 sep, 11:00 a.m." }
+          ]
+        }
+      },
+      "layout": {
+        "type": "SingleColumnLayout",
+        "children": [
+          {
+            "type": "Form",
+            "name": "form",
+            "children": [
+              {
+                "type": "TextSubheading",
+                "text": "Elige el horario que prefieras (días hábiles)"
+              },
+              {
+                "type": "RadioButtonsGroup",
+                "label": "Horarios disponibles",
+                "required": true,
+                "name": "appointment_slot",
+                "data-source": "${data.slots}"
+              },
+              {
+                "type": "Footer",
+                "label": "Confirmar cita",
+                "on-click-action": {
+                  "name": "data_exchange",
+                  "payload": {
+                    "name": "${data.name}",
+                    "email": "${data.email}",
+                    "tos_optin": "${data.tos_optin}",
+                    "marketing_optin": "${data.marketing_optin}",
+                    "categories": "${data.categories}",
+                    "has_website": "${data.has_website}",
+                    "last_update": "${data.last_update}",
+                    "website_url": "${data.website_url}",
+                    "performance_score": "${data.performance_score}",
+                    "score_bucket": "${data.score_bucket}",
+                    "appointment_slot": "${form.appointment_slot}",
+                    "action": "create_event"
+                  }
+                }
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "SUCCESS",
+      "title": "¡Cita confirmada!",
+      "data": {
+        "name": { "type": "string", "__example__": "Example" },
+        "appointment_slot": { "type": "string", "__example__": "2026-09-22T10:00:00-05:00" },
+        "appointment_label": { "type": "string", "__example__": "Lunes 22 sep, 10:00 a.m." },
+        "advisor_email": { "type": "string", "__example__": "andres.tabares@eiso.com.co" }
+      },
+      "terminal": true,
+      "success": true,
+      "layout": {
+        "type": "SingleColumnLayout",
+        "children": [
+          {
+            "type": "Form",
+            "name": "form",
+            "children": [
+              {
+                "type": "TextHeading",
+                "text": "¡Gracias, ${data.name}!"
+              },
+              {
+                "type": "TextBody",
+                "text": "Tu cita quedó agendada para el ${data.appointment_label}."
+              },
+              {
+                "type": "TextBody",
+                "text": "Recibirás una invitación en tu correo y un recordatorio en WhatsApp. Un asesor de EISO se contactará contigo desde andres.tabares@eiso.com.co."
+              },
+              {
+                "type": "TextBody",
+                "text": "¡Gracias por confiar en nosotros para llevar tu presencia digital al siguiente nivel!"
+              },
+              {
+                "type": "Footer",
+                "label": "Finalizar",
+                "on-click-action": {
+                  "name": "complete",
+                  "payload": {
+                    "name": "${data.name}",
+                    "appointment_slot": "${data.appointment_slot}",
+                    "appointment_label": "${data.appointment_label}",
+                    "advisor_email": "${data.advisor_email}"
+                  }
+                }
+              }
+            ]
+          }
+        ]
+      }
+    }
+  ]
+}

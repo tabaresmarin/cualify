@@ -30,16 +30,19 @@ CREATE TABLE `conversation_states` (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_uca1400_ai_ci;
 
 
-CREATE TABLE IF NOT EXISTS leads (
-    id INT AUTO_INCREMENT PRIMARY KEY,
-    phone VARCHAR(20) UNIQUE NOT NULL,
-    step INT DEFAULT 1,
-    status ENUM('nuevo', 'en_calificacion', 'calificado', 'descartado') DEFAULT 'nuevo',
-    servicio_interes VARCHAR(100) NULL,
-    presupuesto VARCHAR(50) NULL,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
-);
+DROP TABLE IF EXISTS `leads`;
+CREATE TABLE `leads` (
+  `id` int(11) NOT NULL AUTO_INCREMENT,
+  `client_id` int(11) DEFAULT NULL,
+  `meta_lead_id` varchar(100) DEFAULT NULL,
+  `name` varchar(100) DEFAULT NULL,
+  `phone` varchar(20) DEFAULT NULL,
+  `status` enum('new','qualifying','qualified','disqualified','scheduled') DEFAULT 'new',
+  `created_at` timestamp NULL DEFAULT current_timestamp(),
+  PRIMARY KEY (`id`),
+  KEY `client_id` (`client_id`),
+  CONSTRAINT `leads_ibfk_1` FOREIGN KEY (`client_id`) REFERENCES `clients` (`id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_uca1400_ai_ci;
 
 
 -- 2026-09-16 13:26:30 UTC
