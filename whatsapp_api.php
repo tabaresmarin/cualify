@@ -4,8 +4,27 @@ require_once __DIR__ . '/config.php';
 /**
  * Envía un payload arbitrario a la API de WhatsApp.
  * Devuelve ['http_code', 'respuesta', 'error'].
+ *
+ * MEJORA: Si $payload es un string, lo envuelve automáticamente en un
+ * payload de tipo 'text'. Esto permite compatibilidad con código legado
+ * que llame a esta función pasándole directamente el mensaje de texto.
  */
 function enviarMensajeWhatsApp($to, $payload) {
+    // Compatibilidad: si recibe un string, lo tratamos como mensaje de texto
+    if (is_string($payload)) {
+        $payload = [
+            'type' => 'text',
+            'text' => ['body' => $payload],
+        ];
+    }
+
+    // Validación estricta: debe ser array a partir de aquí
+    if (!is_array($payload)) {
+        throw new InvalidArgumentException(
+            'enviarMensajeWhatsApp: $payload debe ser array o string, se recibió ' . gettype($payload)
+        );
+    }
+
     $url = 'https://graph.facebook.com/v19.0/' . WA_PHONE_NUMBER_ID . '/messages';
 
     $payload = array_merge([
@@ -64,19 +83,6 @@ function enviarBotonesWhatsApp($to, $textoMensaje, $botones) {
 /**
  * Envía un mensaje de lista interactiva (hasta 10 filas en total, repartidas en secciones).
  * Útil para ofrecer varias opciones que no caben en botones de respuesta rápida (máx. 3).
- *
- * @param string $to            Número destino
- * @param string $textoMensaje  Cuerpo del mensaje
- * @param string $textoBoton    Texto del botón que abre la lista (máx. 20 caracteres)
- * @param array  $secciones     [
- *                                 [
- *                                   'title' => 'Lunes 22 sep', // máx 24 caracteres
- *                                   'rows'  => [
- *                                     ['id' => 'slot_2026-09-22_10:00', 'title' => '10:00 am', 'description' => ''],
- *                                   ]
- *                                 ],
- *                                 ...
- *                               ]
  */
 function enviarListaWhatsApp($to, $textoMensaje, $textoBoton, $secciones) {
     return enviarMensajeWhatsApp($to, [
@@ -105,32 +111,6 @@ function enviarTextoWhatsApp($to, $textoMensaje) {
 /**
  * Envía un mensaje de plantilla aprobada.
  * Obligatorio cuando el destino NO escribió al bot en las últimas 24 h.
- *
- * @param string $to               Número destino
- * @param string $nombrePlantilla  Nombre exacto de la plantilla en Meta
- * @param string $codigoIdioma     Código de idioma tal como está en la plantilla (ej: "en", "es", "es_CO", "en_US")
- * @param array  $parametros       Parámetros de texto para el BODY (en orden, {{1}}, {{2}}, ...)
- * @param array  $botones          Opcional. Componentes de botón, uno por botón dinámico que tenga la plantilla.
- *
- *                                 Para botones 'url' / 'copy_code' (type=text):
- *                                 [
- *                                   [
- *                                     'sub_type'   => 'url',
- *                                     'index'      => 0,
- *                                     'parametros' => ['valor-dinamico']
- *                                   ]
- *                                 ]
- *
- *                                 Para botones de tipo 'flow' (SIEMPRE deben declararse,
- *                                 tengan o no datos dinámicos), usan type=action:
- *                                 [
- *                                   [
- *                                     'sub_type'   => 'flow',
- *                                     'index'      => 0,
- *                                     'flow_token' => 'unused', // o un token único de sesión que generes tú
- *                                     'flow_action_data' => []  // opcional: datos iniciales para la primera pantalla
- *                                   ]
- *                                 ]
  */
 function enviarPlantillaWhatsApp($to, $nombrePlantilla, $codigoIdioma = "es", $parametros = [], $botones = []) {
     $url = "https://graph.facebook.com/v19.0/" . WA_PHONE_NUMBER_ID . "/messages";
@@ -161,8 +141,6 @@ function enviarPlantillaWhatsApp($to, $nombrePlantilla, $codigoIdioma = "es", $p
     }
 
     // Componente(s) BUTTON: obligatorios si la plantilla tiene botones dinámicos
-    // (URL con variable, Flow, Copy Code, etc.). Cada botón requiere su propio
-    // componente con 'sub_type' e 'index' (posición del botón, empieza en 0).
     foreach ($botones as $btn) {
         $buttonComponent = [
             "type"     => "button",
@@ -171,8 +149,6 @@ function enviarPlantillaWhatsApp($to, $nombrePlantilla, $codigoIdioma = "es", $p
         ];
 
         if ($btn['sub_type'] === 'flow') {
-            // Los botones de tipo Flow SIEMPRE requieren este componente,
-            // incluso si el Flow no necesita datos iniciales.
             $action = [
                 "flow_token" => $btn['flow_token'] ?? 'unused',
             ];
@@ -187,7 +163,6 @@ function enviarPlantillaWhatsApp($to, $nombrePlantilla, $codigoIdioma = "es", $p
                 ]
             ];
         } elseif (!empty($btn['parametros'])) {
-            // Botones 'url' o 'copy_code' con valor dinámico: type "text"
             $buttonParams = [];
             foreach ($btn['parametros'] as $val) {
                 $buttonParams[] = [

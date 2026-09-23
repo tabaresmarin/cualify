@@ -5,15 +5,9 @@ require_once __DIR__ . '/config.php';
  * Consulta el rendimiento (Performance) de una URL usando Google PageSpeed Insights v5.
  * Devuelve ['ok' => bool, 'score' => int|null (0-100), 'error' => string|null].
  *
- * Requiere la variable de entorno PSI_API_KEY (ver .env.example).
- * Cómo generarla:
- *   1. Ve a https://console.cloud.google.com/ y crea o selecciona un proyecto.
- *   2. Menú > APIs & Services > Library > busca "PageSpeed Insights API" > Enable.
- *   3. APIs & Services > Credentials > Create Credentials > API key.
- *   4. (Recomendado) Restringe esa key a la API "PageSpeed Insights API".
- *   5. Copia la key en tu archivo .env como PSI_API_KEY=xxxxx
+ * Incluye reintentos automáticos para mitigar timeouts transitorios de PSI.
  */
-function consultarRendimientoSitio($url) {
+function consultarRendimientoSitio($url, $intentosMaximos = 2) {
     $apiKey = valorEntorno('PSI_API_KEY');
     if (!$apiKey) {
         return ['ok' => false, 'score' => null, 'error' => 'Falta configurar PSI_API_KEY en .env'];
@@ -26,37 +20,63 @@ function consultarRendimientoSitio($url) {
         'strategy' => 'mobile',
     ]);
 
-    $ch = curl_init($endpoint);
-    curl_setopt_array($ch, [
-        CURLOPT_RETURNTRANSFER => true,
-        CURLOPT_TIMEOUT        => 45, // PSI puede tardar varios segundos en analizar el sitio
-        CURLOPT_SSL_VERIFYPEER => true,
-    ]);
+    $ultimoError = null;
 
-    $respuesta = curl_exec($ch);
-    $httpCode  = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-    $curlError = curl_error($ch);
-    curl_close($ch);
+    for ($intento = 1; $intento <= $intentosMaximos; $intento++) {
+        $ch = curl_init($endpoint);
+        curl_setopt_array($ch, [
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_TIMEOUT        => 90, // Aumentado de 45 a 90 segundos
+            CURLOPT_CONNECTTIMEOUT => 15, // Timeout de conexión inicial
+            CURLOPT_SSL_VERIFYPEER => true,
+        ]);
 
-    if ($curlError) {
-        return ['ok' => false, 'score' => null, 'error' => 'Error de conexión: ' . $curlError];
+        $respuesta = curl_exec($ch);
+        $httpCode  = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        $curlError = curl_error($ch);
+        curl_close($ch);
+
+        // Si hay error de conexión (timeout, DNS, etc.)
+        if ($curlError) {
+            $ultimoError = 'Error de conexión: ' . $curlError;
+            error_log("[pagespeed_api] Intento $intento/$intentosMaximos falló para $url: $ultimoError");
+
+            // Esperar 3 segundos antes de reintentar
+            if ($intento < $intentosMaximos) {
+                sleep(3);
+            }
+            continue;
+        }
+
+        $data = json_decode($respuesta, true);
+
+        // Si la respuesta HTTP no es 200 o falta el score
+        if ($httpCode !== 200 || !isset($data['lighthouseResult']['categories']['performance']['score'])) {
+            $ultimoError = $data['error']['message'] ?? 'PageSpeed Insights no pudo analizar la URL.';
+
+            // Si es un error 429 (rate limit) o 5xx (servidor Google), reintentar
+            if (($httpCode === 429 || $httpCode >= 500) && $intento < $intentosMaximos) {
+                error_log("[pagespeed_api] Intento $intento/$intentosMaximos: HTTP $httpCode, reintentando...");
+                sleep(5);
+                continue;
+            }
+
+            // Otros errores (400 URL inválida, etc.) no reintentar
+            return ['ok' => false, 'score' => null, 'error' => $ultimoError];
+        }
+
+        // Éxito
+        $score = (int) round($data['lighthouseResult']['categories']['performance']['score'] * 100);
+        return ['ok' => true, 'score' => $score, 'error' => null];
     }
 
-    $data = json_decode($respuesta, true);
-
-    if ($httpCode !== 200 || !isset($data['lighthouseResult']['categories']['performance']['score'])) {
-        $mensajeError = $data['error']['message'] ?? 'PageSpeed Insights no pudo analizar la URL proporcionada.';
-        return ['ok' => false, 'score' => null, 'error' => $mensajeError];
-    }
-
-    $score = (int) round($data['lighthouseResult']['categories']['performance']['score'] * 100);
-
-    return ['ok' => true, 'score' => $score, 'error' => null];
+    // Se agotaron los intentos
+    return ['ok' => false, 'score' => null, 'error' => $ultimoError ?? 'PageSpeed no respondió tras ' . $intentosMaximos . ' intentos.'];
 }
 
 /**
  * Clasifica al lead según el puntaje de rendimiento obtenido.
- * Devuelve un array con la clave de clasificación y los textos a mostrar.
+ * (Sin cambios)
  */
 function clasificarPorRendimiento($score) {
     if ($score <= 50) {

@@ -1,323 +1,403 @@
 <?php
+/**
+ * lead_qualifier.php — Motor conversacional y lógica de negocio (Cualify EISO).
+ *
+ * NOTA IMPORTANTE:
+ *   - clasificarPorRendimiento() y consultarRendimientoSitio() viven en pagespeed_api.php.
+ *   - construirSlotsPlanoFlow(), parsearSlotFlow() y formatearFranjaLegible() viven en appointment_slots.php.
+ *   - enviarMensajeWhatsApp(), enviarListaWhatsApp() viven en whatsapp_api.php.
+ *   - crearEventoCalendar() vive en google_calendar_api.php.
+ *   NO las redeclares aquí.
+ */
+
 require_once __DIR__ . '/config.php';
 require_once __DIR__ . '/whatsapp_api.php';
 require_once __DIR__ . '/pagespeed_api.php';
 require_once __DIR__ . '/google_calendar_api.php';
 require_once __DIR__ . '/appointment_slots.php';
+require_once __DIR__ . '/database.php';
 
-function obtenerConexion() {
-    return new mysqli(DB_HOST, DB_USER, DB_PASS, DB_NAME);
+// ============================================================================
+// FUNCIONES AUXILIARES EXCLUSIVAS DE ESTE ARCHIVO
+// ============================================================================
+
+if (!function_exists('normalizarUrlSitio')) {
+    function normalizarUrlSitio($url) {
+        $url = trim($url);
+        if ($url === '') return null;
+
+        if (!preg_match('#^https?://#i', $url)) {
+            $url = 'https://' . $url;
+        }
+
+        $partes = parse_url($url);
+        if (!isset($partes['host']) || strpos($partes['host'], '.') === false) {
+            return null;
+        }
+
+        return $url;
+    }
 }
 
-/**
- * Actualiza columnas arbitrarias del lead identificado por $phone.
- * $campos es un array asociativo ['columna' => valor]. Solo usa columnas de una whitelist fija.
- */
-function actualizarLead(mysqli $mysqli, $phone, array $campos) {
-    $columnasPermitidas = [
-        'step', 'status', 'servicio_interes', 'presupuesto',
-        'tiene_sitio_web', 'antiguedad_sitio', 'url_sitio',
-        'pagespeed_score', 'clasificacion', 'cita_fecha', 'cita_hora', 'google_event_id',
-    ];
-
-    $sets = [];
-    $tipos = '';
-    $valores = [];
-    foreach ($campos as $col => $val) {
-        if (!in_array($col, $columnasPermitidas, true)) {
-            continue;
+if (!function_exists('enviarMensajeTexto')) {
+    function enviarMensajeTexto($phone, $mensaje) {
+        if (function_exists('enviarTextoWhatsApp')) {
+            return enviarTextoWhatsApp($phone, $mensaje);
         }
-        $sets[] = "`$col` = ?";
-        $tipos .= 's';
-        $valores[] = $val;
+        if (function_exists('enviarMensajeWhatsApp')) {
+            return enviarMensajeWhatsApp($phone, $mensaje);
+        }
+        error_log("[enviarMensajeTexto] (fallback) Para $phone: $mensaje");
+        return true;
     }
-    if (!$sets) {
+}
+
+if (!function_exists('actualizarLead')) {
+    function actualizarLead(PDO $pdo, $phone, array $campos) {
+        if (empty($campos)) return false;
+
+        $sets    = [];
+        $valores = [];
+        foreach ($campos as $k => $v) {
+            $sets[]    = "`$k` = ?";
+            $valores[] = $v;
+        }
+        $valores[] = $phone;
+
+        $sql = "UPDATE leads SET " . implode(', ', $sets) . " WHERE phone = ?";
+
+        try {
+            $stmt = $pdo->prepare($sql);
+            return $stmt->execute($valores);
+        } catch (PDOException $e) {
+            error_log('[actualizarLead] Error: ' . $e->getMessage());
+            return false;
+        }
+    }
+}
+
+if (!function_exists('encolarTrabajoPagespeed')) {
+    function encolarTrabajoPagespeed(PDO $pdo, $phone, $url, array $payload = []) {
+        try {
+            $stmt = $pdo->prepare(
+                "SELECT id FROM jobs_queue
+                 WHERE phone = ? AND job_type = 'pagespeed_analysis'
+                   AND status IN ('pending','processing')
+                   AND JSON_UNQUOTE(JSON_EXTRACT(payload, '$.url')) = ?
+                 LIMIT 1"
+            );
+            $stmt->execute([$phone, $url]);
+            if ($stmt->fetch()) {
+                return false;
+            }
+        } catch (PDOException $e) {
+            error_log('[encolarTrabajoPagespeed] Validación duplicados omitida: ' . $e->getMessage());
+        }
+
+        $payload['url'] = $url;
+        $payloadJson = json_encode($payload, JSON_UNESCAPED_UNICODE);
+
+        try {
+            $stmt = $pdo->prepare(
+                "INSERT INTO jobs_queue (phone, job_type, payload, status, created_at)
+                 VALUES (?, 'pagespeed_analysis', ?, 'pending', NOW())"
+            );
+            $stmt->execute([$phone, $payloadJson]);
+            return (int) $pdo->lastInsertId();
+        } catch (PDOException $e) {
+            error_log('[encolarTrabajoPagespeed] Error INSERT: ' . $e->getMessage());
+            return false;
+        }
+    }
+}
+
+if (!function_exists('reconectarSiEsNecesario')) {
+    function reconectarSiEsNecesario(?PDO $pdo): PDO {
+        try {
+            if ($pdo !== null) {
+                $pdo->query('SELECT 1');
+                return $pdo;
+            }
+        } catch (PDOException $e) {
+            error_log('[reconectarSiEsNecesario] Conexión perdida, reconectando: ' . $e->getMessage());
+        }
+
+        error_log('[reconectarSiEsNecesario] Creando nueva conexión PDO...');
+        $nueva = obtenerConexion(true);
+        error_log('[reconectarSiEsNecesario] Nueva conexión PDO establecida.');
+        return $nueva;
+    }
+}
+
+// ============================================================================
+// PROCESAMIENTO ASÍNCRONO DEL LEAD (post-Flow) — PDO
+// ============================================================================
+
+function procesarLeadFlowAsincrono($phone, PDO &$pdo) {
+    try {
+        $stmt = $pdo->prepare("SELECT name, email, url_sitio FROM leads WHERE phone = ? LIMIT 1");
+        $stmt->execute([$phone]);
+        $lead = $stmt->fetch(PDO::FETCH_ASSOC);
+    } catch (PDOException $e) {
+        error_log('[procesarLeadFlowAsincrono] Error SELECT: ' . $e->getMessage());
+        return false;
+    }
+
+    if (!$lead || empty($lead['url_sitio'])) {
+        error_log("[procesarLeadFlowAsincrono] Sin lead o URL para $phone");
+        return false;
+    }
+
+    $nombre = !empty($lead['name']) ? $lead['name'] : 'estimado cliente';
+    $url    = $lead['url_sitio'];
+
+    // Mensaje de agradecimiento inmediato
+    $mensajeGracias = "¡Gracias, {$nombre}! 🎉\n\n"
+                    . "Recibimos tu sitio: {$url}\n"
+                    . "Estoy analizando su rendimiento. Te enviaré el diagnóstico en un momento...";
+    enviarMensajeTexto($phone, $mensajeGracias);
+
+    // Análisis de PageSpeed
+    $resultado = consultarRendimientoSitio($url);
+
+    // Reconectar MySQL tras la espera larga
+    $pdo = reconectarSiEsNecesario($pdo);
+
+    $score        = 0;
+    $scoreBucket  = 'error';
+    $scoreMessage = 'No pudimos analizar tu sitio automáticamente. Un asesor lo revisará contigo.';
+
+    if (!empty($resultado['ok'])) {
+        $score        = (int) $resultado['score'];
+        $clasif       = clasificarPorRendimiento($score);
+        $scoreBucket  = $clasif['clave'];
+        $scoreMessage = $clasif['mensaje'];
+    } else {
+        error_log("[procesarLeadFlowAsincrono] PageSpeed falló para $url: " . ($resultado['error'] ?? 'desconocido'));
+        $errorDetalle = $resultado['error'] ?? '';
+        if (stripos($errorDetalle, 'timeout') !== false || stripos($errorDetalle, 'timed out') !== false) {
+            $scoreMessage = "Tu sitio tardó demasiado en responder al análisis automático. Esto puede indicar problemas serios de rendimiento. Un asesor lo revisará manualmente y te contactará pronto.";
+        } else {
+            $scoreMessage = "No pudimos analizar tu sitio automáticamente. Un asesor lo revisará y te contactará pronto.";
+        }
+    }
+
+    // Actualizar el lead
+    actualizarLead($pdo, $phone, [
+        'pagespeed_score' => (string) $score,
+        'clasificacion'   => $scoreBucket,
+    ]);
+
+    // Enviar diagnóstico
+    $mensajeDiagnostico = "📊 *Diagnóstico de {$url}*\n\n"
+                        . "Puntuación de rendimiento: *{$score}/100*\n"
+                        . $scoreMessage . "\n\n"
+                        . "¿Quieres agendar una llamada de asesoría? Responde *AGENDAR* y te muestro los horarios disponibles.";
+    enviarMensajeTexto($phone, $mensajeDiagnostico);
+
+    $pdo = reconectarSiEsNecesario($pdo);
+
+    // Marcar lead en step 2 (listo para agendar)
+    actualizarLead($pdo, $phone, ['step' => '2']);
+
+    return true;
+}
+
+// ============================================================================
+// MOTOR CONVERSACIONAL — PDO
+// ============================================================================
+
+function procesarMensajeEntrante($phone, $texto, PDO $pdo) {
+    $textoLower = strtolower(trim($texto));
+
+    // Obtener estado actual del lead
+    try {
+        $stmt = $pdo->prepare("SELECT step, url_sitio, pagespeed_score, clasificacion FROM leads WHERE phone = ? LIMIT 1");
+        $stmt->execute([$phone]);
+        $lead = $stmt->fetch(PDO::FETCH_ASSOC);
+    } catch (PDOException $e) {
+        error_log('[procesarMensajeEntrante] Error SELECT: ' . $e->getMessage());
         return;
     }
-    $tipos .= 's';
-    $valores[] = $phone;
-
-    $sql = "UPDATE leads SET " . implode(', ', $sets) . " WHERE phone = ?";
-    $stmt = $mysqli->prepare($sql);
-    $stmt->bind_param($tipos, ...$valores);
-    $stmt->execute();
-}
-
-/**
- * Envía la lista de franjas horarias disponibles (próximos 5 días hábiles, 10:00 am y 3:00 pm)
- * y deja al lead esperando su selección en el paso 14.
- */
-function enviarFranjasCita(mysqli $mysqli, $phone, $textoIntro) {
-    $secciones = construirSeccionesFranjas(5);
-    $enviado = enviarListaWhatsApp($phone, $textoIntro, 'Ver horarios', $secciones);
-    if ($enviado['http_code'] === 200) {
-        actualizarLead($mysqli, $phone, ['step' => 14]);
-    }
-    return $enviado;
-}
-
-/**
- * Normaliza y valida una URL escrita libremente por el usuario.
- */
-function normalizarUrlSitio($texto) {
-    $url = trim($texto);
-    if ($url === '') {
-        return null;
-    }
-    if (!preg_match('#^https?://#i', $url)) {
-        $url = 'https://' . $url;
-    }
-    if (filter_var($url, FILTER_VALIDATE_URL) === false) {
-        return null;
-    }
-    return $url;
-}
-
-function procesarCalificacion($phone, $respuestaId = null, $textoLibre = null) {
-    $mysqli = obtenerConexion();
-
-    // 1. Buscar o crear el lead en la BD
-    $stmt = $mysqli->prepare("SELECT step, status FROM leads WHERE phone = ?");
-    $stmt->bind_param("s", $phone);
-    $stmt->execute();
-    $lead = $stmt->get_result()->fetch_assoc();
 
     if (!$lead) {
-        $stmtInsert = $mysqli->prepare("INSERT INTO leads (phone, step, status) VALUES (?, 1, 'en_calificacion')");
-        $stmtInsert->bind_param("s", $phone);
-        $stmtInsert->execute();
-        $step = 1;
-    } else {
-        $step = (int) $lead['step'];
+        try {
+            $stmt = $pdo->prepare("INSERT INTO leads (phone, step, status) VALUES (?, 1, 'en_calificacion')");
+            $stmt->execute([$phone]);
+        } catch (PDOException $e) {
+            error_log('[procesarMensajeEntrante] Error INSERT: ' . $e->getMessage());
+        }
+
+        enviarMensajeTexto($phone, "¡Hola! Soy el asistente de EISO. Para comenzar, envíame la URL de tu sitio web (ej. https://tusitio.com) y te haré un diagnóstico gratuito.");
+        return;
     }
 
-    // 2. Máquina de estados
-    // El estado solo avanza si Meta ACEPTÓ el mensaje (http_code 200);
-    // si el envío falla, el lead permanece en el paso actual y se reintenta en su próximo mensaje.
-    switch ($step) {
+    $step = (int) ($lead['step'] ?? 0);
 
-        case 1:
-            // Pregunta 1: Filtro de servicio vs bolsa de empleo
-            $texto = "¡Hola! Gracias por escribirnos. Para atenderte mejor, ¿qué necesitas hoy?";
-            $botones = [
-                ['id' => 'btn_servicio', 'title' => 'Contratar Servicio'],
-                ['id' => 'btn_empleo',   'title' => 'Bolsa de Trabajo'],
-                ['id' => 'btn_otro',     'title' => 'Otra Consulta'],
-            ];
-            $enviado = enviarBotonesWhatsApp($phone, $texto, $botones);
-            if ($enviado['http_code'] === 200) {
-                actualizarLead($mysqli, $phone, ['step' => 2]);
-            }
-            break;
-
-        case 2:
-            // Procesar respuesta a la Pregunta 1
-            if ($respuestaId === 'btn_empleo' || $respuestaId === 'btn_otro') {
-                $enviado = enviarTextoWhatsApp($phone, "Gracias por tu interés. En este momento no tenemos vacantes ni atención presencial disponible.");
-                if ($enviado['http_code'] === 200) {
-                    actualizarLead($mysqli, $phone, ['status' => 'descartado', 'step' => 99]);
-                }
-            } elseif ($respuestaId === 'btn_servicio') {
-                $texto = "¿Qué servicio te interesa?";
-                $botones = [
-                    ['id' => 'btn_renovar_web',   'title' => 'Renovar mi sitio web'],
-                    ['id' => 'btn_otro_servicio', 'title' => 'Otro servicio'],
-                ];
-                $enviado = enviarBotonesWhatsApp($phone, $texto, $botones);
-                if ($enviado['http_code'] === 200) {
-                    actualizarLead($mysqli, $phone, ['step' => 5]);
-                }
-            }
-            break;
-
-        case 5:
-            // Procesar submenú de servicios
-            if ($respuestaId === 'btn_renovar_web') {
-                actualizarLead($mysqli, $phone, ['servicio_interes' => 'Renovación Web']);
-                $texto = "Perfecto, vamos a revisar tu sitio actual. ¿Ya tienes un sitio web en funcionamiento?";
-                $botones = [
-                    ['id' => 'btn_si_sitio', 'title' => 'Sí, tengo uno'],
-                    ['id' => 'btn_no_sitio', 'title' => 'No tengo'],
-                ];
-                $enviado = enviarBotonesWhatsApp($phone, $texto, $botones);
-                if ($enviado['http_code'] === 200) {
-                    actualizarLead($mysqli, $phone, ['step' => 10]);
-                }
-            } elseif ($respuestaId === 'btn_otro_servicio') {
-                actualizarLead($mysqli, $phone, ['servicio_interes' => 'Otro servicio']);
-                $texto = "¿Para cuándo necesitas contratar el servicio?";
-                $botones = [
-                    ['id' => 'btn_urgente',   'title' => 'Esta semana'],
-                    ['id' => 'btn_mes',       'title' => 'Este mes'],
-                    ['id' => 'btn_solo_info', 'title' => 'Solo cotizando'],
-                ];
-                $enviado = enviarBotonesWhatsApp($phone, $texto, $botones);
-                if ($enviado['http_code'] === 200) {
-                    actualizarLead($mysqli, $phone, ['step' => 6]);
-                }
-            }
-            break;
-
-        case 6:
-            // Rama genérica ("otro servicio"): procesar urgencia y finalizar calificación
-            if ($respuestaId === 'btn_urgente' || $respuestaId === 'btn_mes') {
-                $enviado = enviarTextoWhatsApp($phone, "¡Excelente! Un asesor de nuestro equipo te contactará pronto para conocer más sobre tu proyecto.");
-                if ($enviado['http_code'] === 200) {
-                    actualizarLead($mysqli, $phone, ['status' => 'calificado', 'step' => 99]);
-                }
-            } else {
-                $enviado = enviarTextoWhatsApp($phone, "Entendido. Te enviamos nuestro catálogo de precios para que lo revises con calma.");
-                if ($enviado['http_code'] === 200) {
-                    actualizarLead($mysqli, $phone, ['status' => 'descartado', 'step' => 99]);
-                }
-            }
-            break;
-
-        case 10:
-            // Procesar "¿ya tienes un sitio web?"
-            if ($respuestaId === 'btn_no_sitio') {
-                actualizarLead($mysqli, $phone, ['tiene_sitio_web' => 'no', 'clasificacion' => 'sin_sitio']);
-                $textoIntro = "Este flujo está pensado para renovar un sitio existente, pero con gusto te ayudamos a construir uno desde cero. Elige el horario que más te acomode para que un asesor te contacte:";
-                enviarFranjasCita($mysqli, $phone, $textoIntro);
-            } elseif ($respuestaId === 'btn_si_sitio') {
-                actualizarLead($mysqli, $phone, ['tiene_sitio_web' => 'si']);
-                $texto = "¿Hace cuánto no actualizas tu sitio web?";
-                $botones = [
-                    ['id' => 'btn_menos_1', 'title' => 'Menos de 1 año'],
-                    ['id' => 'btn_1_2',     'title' => 'Entre 1 y 2 años'],
-                    ['id' => 'btn_mas_2',   'title' => 'Más de 2 años'],
-                ];
-                $enviado = enviarBotonesWhatsApp($phone, $texto, $botones);
-                if ($enviado['http_code'] === 200) {
-                    actualizarLead($mysqli, $phone, ['step' => 11]);
-                }
-            }
-            break;
-
-        case 11:
-            // Procesar antigüedad del sitio y pedir la URL
-            $mapaAntiguedad = [
-                'btn_menos_1' => 'menos_1',
-                'btn_1_2'     => '1_a_2',
-                'btn_mas_2'   => 'mas_2',
-            ];
-            if (isset($mapaAntiguedad[$respuestaId])) {
-                actualizarLead($mysqli, $phone, ['antiguedad_sitio' => $mapaAntiguedad[$respuestaId]]);
-                $texto = "Compárteme la dirección (URL) de tu sitio web actual para analizarlo. Ejemplo: www.tuempresa.com";
-                $enviado = enviarTextoWhatsApp($phone, $texto);
-                if ($enviado['http_code'] === 200) {
-                    actualizarLead($mysqli, $phone, ['step' => 12]);
-                }
-            }
-            break;
-
-        case 12:
-            // Esperando la URL como texto libre
-            if ($textoLibre === null) {
-                break; // no llegó texto (ej: llegó un botón inesperado); no hacemos nada
-            }
-
-            $url = normalizarUrlSitio($textoLibre);
-            if ($url === null) {
-                enviarTextoWhatsApp($phone, "Esa no parece ser una URL válida. Por favor envíala así: www.tuempresa.com");
-                break; // se queda en el paso 12 para reintentar
-            }
-
-            actualizarLead($mysqli, $phone, ['url_sitio' => $url]);
-            enviarTextoWhatsApp($phone, "Gracias, dame un momento mientras analizo el rendimiento de tu sitio... ⏳");
-
-            $resultado = consultarRendimientoSitio($url);
-
-            if (!$resultado['ok']) {
-                enviarTextoWhatsApp($phone, "No pude analizar tu sitio automáticamente (" . $resultado['error'] . "). No te preocupes, un asesor lo revisará manualmente contigo.");
-                $textoIntro = "Elige el horario que más te acomode para que un asesor revise tu sitio:";
-                enviarFranjasCita($mysqli, $phone, $textoIntro);
-                break;
-            }
-
-            $score = $resultado['score'];
-            $clasificacion = clasificarPorRendimiento($score);
-            actualizarLead($mysqli, $phone, [
-                'pagespeed_score' => (string) $score,
-                'clasificacion'   => $clasificacion['clave'],
-            ]);
-
-            enviarTextoWhatsApp($phone, $clasificacion['mensaje']);
-
-            $textoIntro = "Elige el horario que más te acomode (días hábiles, hora Colombia):";
-            enviarFranjasCita($mysqli, $phone, $textoIntro);
-            break;
-
-        case 14:
-            // Esperando selección de franja horaria (list_reply con id "slot_YYYY-MM-DD_HH:MM")
-            if ($respuestaId === null) {
-                break;
-            }
-
-            $franja = parsearFranjaSeleccionada($respuestaId);
-            if ($franja === null) {
-                enviarTextoWhatsApp($phone, "No reconocí esa opción. Por favor elige un horario de la lista que te enviamos.");
-                break;
-            }
-
-            // Traer datos del lead para armar el evento y el mensaje de cierre
-            $stmtLead = $mysqli->prepare("SELECT url_sitio, pagespeed_score, clasificacion, servicio_interes FROM leads WHERE phone = ?");
-            $stmtLead->bind_param("s", $phone);
-            $stmtLead->execute();
-            $datosLead = $stmtLead->get_result()->fetch_assoc();
-
-            $descripcionEvento = "Lead calificado vía WhatsApp.\nTeléfono: {$phone}\n";
-            if (!empty($datosLead['url_sitio'])) {
-                $descripcionEvento .= "Sitio web: {$datosLead['url_sitio']}\n";
-            }
-            if ($datosLead['pagespeed_score'] !== null) {
-                $descripcionEvento .= "Puntaje PageSpeed (móvil): {$datosLead['pagespeed_score']}/100\n";
-            }
-            if (!empty($datosLead['clasificacion'])) {
-                $descripcionEvento .= "Clasificación: {$datosLead['clasificacion']}\n";
-            }
-
-            $resultadoEvento = crearEventoCalendar(
-                "Llamada con lead " . $phone,
-                $descripcionEvento,
-                $franja['inicio'],
-                $franja['fin']
-            );
-
-            $fechaLegible = $franja['inicio']->format('l d/m/Y H:i');
-
-            if ($resultadoEvento['ok']) {
-                actualizarLead($mysqli, $phone, [
-                    'status'          => 'calificado',
-                    'step'            => 99,
-                    'cita_fecha'      => $franja['inicio']->format('Y-m-d'),
-                    'cita_hora'       => $franja['inicio']->format('H:i:s'),
-                    'google_event_id' => $resultadoEvento['event_id'],
-                ]);
-                enviarTextoWhatsApp(
-                    $phone,
-                    "¡Listo! Tu cita quedó agendada para el *{$fechaLegible}* (hora Colombia). Un asesor te llamará en ese horario.\n\n¡Gracias por tu tiempo e interés en EISO! 🙌"
-                );
-            } else {
-                // No se pudo crear el evento en Calendar; igual confirmamos al lead y dejamos registro para que un humano lo agende manualmente.
-                actualizarLead($mysqli, $phone, [
-                    'status'     => 'calificado',
-                    'step'       => 99,
-                    'cita_fecha' => $franja['inicio']->format('Y-m-d'),
-                    'cita_hora'  => $franja['inicio']->format('H:i:s'),
-                ]);
-                error_log('[lead_qualifier] Error creando evento en Calendar para ' . $phone . ': ' . $resultadoEvento['error']);
-                enviarTextoWhatsApp(
-                    $phone,
-                    "¡Listo! Tomamos nota de tu preferencia para el *{$fechaLegible}* (hora Colombia) y un asesor confirmará el espacio contigo.\n\n¡Gracias por tu tiempo e interés en EISO! 🙌"
-                );
-            }
-            break;
-
-        default:
-            // step 99 u otro estado terminal: no se hace nada más.
-            break;
+    // ------------------------------------------------------------------------
+    // USUARIO RESPONDE "AGENDAR" → Mostrar lista interactiva de slots
+    // ------------------------------------------------------------------------
+    if (strpos($textoLower, 'agendar') !== false) {
+        enviarListaSlots($phone, $pdo);
+        return;
     }
 
-    $mysqli->close();
+    // ------------------------------------------------------------------------
+    // USUARIO RESPONDE CON UN NÚMERO (1-5) → Selección por texto (fallback)
+    // ------------------------------------------------------------------------
+    if (preg_match('/^\s*([1-9])\s*$/', $textoLower, $m)) {
+        $indice = (int) $m[1];
+        $slots  = construirSlotsPlanoFlow(5);
+        if (isset($slots[$indice - 1])) {
+            procesarSeleccionSlot($phone, $slots[$indice - 1]['id'], $pdo);
+            return;
+        }
+    }
+
+    // ------------------------------------------------------------------------
+    // USUARIO ESTÁ EN STEP 1 → Esperando URL
+    // ------------------------------------------------------------------------
+    if ($step === 1) {
+        $url = normalizarUrlSitio($texto);
+        if ($url === null) {
+            enviarMensajeTexto($phone, "No pude reconocer una URL válida. Por favor envíala con formato https://tusitio.com");
+            return;
+        }
+
+        actualizarLead($pdo, $phone, ['url_sitio' => $url, 'step' => '1.5']);
+        enviarMensajeTexto($phone, "Perfecto, analizando {$url}... ⏳");
+
+        $resultado = consultarRendimientoSitio($url);
+        $pdo = reconectarSiEsNecesario($pdo);
+
+        $score  = 0;
+        $bucket = 'error';
+        $msg    = 'No pudimos analizarlo. Un asesor te contactará.';
+
+        if (!empty($resultado['ok'])) {
+            $score  = (int) $resultado['score'];
+            $clasif = clasificarPorRendimiento($score);
+            $bucket = $clasif['clave'];
+            $msg    = $clasif['mensaje'];
+        }
+
+        actualizarLead($pdo, $phone, [
+            'pagespeed_score' => (string) $score,
+            'clasificacion'   => $bucket,
+            'step'            => '2',
+        ]);
+
+        enviarMensajeTexto($phone, "📊 *Diagnóstico:*\nPuntuación: *{$score}/100*\n{$msg}\n\n¿Quieres agendar una llamada? Responde *AGENDAR*.");
+        return;
+    }
+
+    // ------------------------------------------------------------------------
+    // FALLBACK
+    // ------------------------------------------------------------------------
+    enviarMensajeTexto($phone, "Entiendo. Si quieres agendar una llamada de asesoría, responde *AGENDAR*. Si necesitas enviar tu sitio web de nuevo, escribe *URL*.");
+}
+
+/**
+ * Envía la lista interactiva de slots disponibles.
+ */
+function enviarListaSlots($phone, PDO $pdo) {
+    $slots = construirSlotsPlanoFlow(5);
+
+    if (empty($slots)) {
+        enviarMensajeTexto($phone, "No hay horarios disponibles en este momento. Un asesor te contactará pronto para coordinar.");
+        return;
+    }
+
+    // Convertir slots al formato de secciones de WhatsApp
+    $rows = [];
+    foreach ($slots as $slot) {
+        $rows[] = [
+            'id'          => $slot['id'],
+            'title'       => mb_substr($slot['title'], 0, 24), // máx 24 chars
+            'description' => 'Toca para agendar esta franja',
+        ];
+    }
+
+    $secciones = [[
+        'title' => 'Próximos horarios',  // máx 24 chars
+        'rows'  => $rows,
+    ]];
+
+    enviarListaWhatsApp(
+        $phone,
+        "📅 *Horarios disponibles:*\n\nElige la franja que prefieras para tu asesoría gratuita.",
+        "Ver horarios",  // máx 20 chars
+        $secciones
+    );
+
+    // Marcar como step 2 (en proceso de agendamiento)
+    actualizarLead($pdo, $phone, ['step' => '2']);
+}
+
+/**
+ * Procesa la selección de un slot (ya sea por lista interactiva o por texto).
+ */
+function procesarSeleccionSlot($phone, $slotId, PDO $pdo) {
+    $franja = parsearSlotFlow($slotId);
+    if ($franja === null) {
+        enviarMensajeTexto($phone, "No pude reconocer ese horario. Responde *AGENDAR* para ver las opciones de nuevo.");
+        return;
+    }
+
+    // Obtener datos del lead para el evento
+    try {
+        $stmt = $pdo->prepare("SELECT name, email, url_sitio, pagespeed_score FROM leads WHERE phone = ? LIMIT 1");
+        $stmt->execute([$phone]);
+        $lead = $stmt->fetch(PDO::FETCH_ASSOC);
+    } catch (PDOException $e) {
+        error_log('[procesarSeleccionSlot] Error SELECT: ' . $e->getMessage());
+        $lead = [];
+    }
+
+    $descripcionEvento = "Lead calificado vía WhatsApp.\n"
+        . "Teléfono: $phone\n"
+        . "Nombre: " . ($lead['name'] ?? '') . "\n"
+        . "Email: " . ($lead['email'] ?? '') . "\n"
+        . "Sitio web: " . ($lead['url_sitio'] ?? '') . "\n"
+        . "Puntaje PageSpeed: " . ($lead['pagespeed_score'] ?? '') . "/100\n";
+
+    // Crear el evento en Google Calendar
+    try {
+        $resultadoEvento = crearEventoCalendar(
+            'Llamada con lead ' . $phone,
+            $descripcionEvento,
+            $franja['inicio'],
+            $franja['fin'],
+            $lead['email'] ?? null
+        );
+    } catch (Throwable $e) {
+        error_log('[procesarSeleccionSlot] Excepción Calendar: ' . $e->getMessage());
+        $resultadoEvento = ['ok' => false, 'error' => $e->getMessage()];
+    }
+
+    $pdo = reconectarSiEsNecesario($pdo);
+
+    if (empty($resultadoEvento['ok'])) {
+        error_log('[procesarSeleccionSlot] Error Calendar: ' . ($resultadoEvento['error'] ?? 'desconocido'));
+        enviarMensajeTexto($phone, "Hubo un problema agendando tu cita. Por favor intenta de nuevo con *AGENDAR*.");
+        return;
+    }
+
+    // Actualizar el lead con los datos de la cita
+    actualizarLead($pdo, $phone, array_filter([
+        'status'          => 'calificado',
+        'step'            => '99',
+        'cita_fecha'      => $franja['inicio']->format('Y-m-d'),
+        'cita_hora'       => $franja['inicio']->format('H:i:s'),
+        'google_event_id' => $resultadoEvento['event_id'] ?? null,
+    ]));
+
+    // Confirmar al usuario
+    $label = formatearFranjaLegible($franja['inicio']);
+    enviarMensajeTexto($phone,
+        "✅ *Cita confirmada*\n\n"
+        . "📅 {$label}\n"
+        . "⏱️ Duración: 30 minutos\n\n"
+        . "Te esperamos. Recibirás un recordatorio antes de la llamada."
+    );
 }

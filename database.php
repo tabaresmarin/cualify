@@ -1,15 +1,32 @@
 <?php
 require_once __DIR__ . '/config.php';
 
-function obtenerConexion() {
+/**
+ * Devuelve una conexión PDO a la base de datos.
+ *
+ * @param bool $forzarNueva Si es true, cierra la conexión cacheada y crea una nueva.
+ *                          Útil tras operaciones largas (PageSpeed, Calendar) que
+ *                          pueden exceder el wait_timeout de MySQL.
+ * @return PDO
+ */
+function obtenerConexion(bool $forzarNueva = false) {
     static $pdo = null;
+
+    // Forzar reconexión: descartar la conexión actual
+    if ($forzarNueva && $pdo !== null) {
+        $pdo = null;
+    }
+
     if ($pdo === null) {
         $dsn = 'mysql:host=' . DB_HOST . ';dbname=' . DB_NAME . ';charset=utf8mb4';
         $pdo = new PDO($dsn, DB_USER, DB_PASS, [
             PDO::ATTR_ERRMODE            => PDO::ERRMODE_EXCEPTION,
             PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
+            PDO::ATTR_EMULATE_PREPARES   => false, // Prepared statements nativos (más seguro)
+            PDO::ATTR_PERSISTENT         => false, // No usar conexiones persistentes
         ]);
     }
+
     return $pdo;
 }
 

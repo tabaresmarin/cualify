@@ -2,65 +2,48 @@
 /**
  * Data Endpoint del Flow "Consultar Tarifas" (Cualify EISO).
  *
- * Este archivo es la URL HTTPS que registraste como "punto de conexión" en el
- * Flow Builder. Meta le hace POST cada vez que una pantalla usa "data_exchange"
- * (WEBSITE_URL, PAGESPEED_RESULT, APPOINTMENT_SLOTS) y también para el "ping"
- * de comprobación de estado.
+ * ARQUITECTURA ASÍNCRONA:
+ * Este endpoint NO realiza el análisis de PageSpeed ni crea eventos de Calendar.
+ * Su única responsabilidad es:
+ *   1. Descifrar la petición de Meta.
+ *   2. Guardar la URL y los datos del lead en la base de datos.
+ *   3. Encolar un job para que worker_pagespeed.php haga el análisis después.
+ *   4. Responder INMEDIATAMENTE con la pantalla SUCCESS.
  *
- * TODA la comunicación va cifrada (RSA-OAEP-SHA256 para envolver la llave AES,
- * AES-128-GCM para el cuerpo, IV invertido en la respuesta). Esto es requisito
- * de Meta, no es opcional: https://developers.facebook.com/documentation/business-messaging/whatsapp/flows/guides/implementingyourflowendpoint
+ * El análisis lento (PageSpeed) y el agendamiento de la cita se realizan
+ * DESPUÉS, desde worker_pagespeed.php, cuando el cron procesa el job.
+ * Esto evita el timeout de 10s de WhatsApp Flows.
  *
- * ==========================================================================
- * INSTALACIÓN
- * ==========================================================================
- * 1) Instala phpseclib3 (PHP nativo NO soporta RSA-OAEP con SHA-256, solo SHA-1):
- *      composer require phpseclib/phpseclib:~3.0
- *    Si no puedes usar Packagist desde tu servidor, descarga el .zip del release
- *    desde https://github.com/phpseclib/phpseclib/releases y ajusta el require
- *    de abajo para apuntar a su autoloader.
+ * Comunicación cifrada:
+ *   - RSA-OAEP-SHA256 para envolver la llave AES.
+ *   - AES-128-GCM para el cuerpo, IV invertido en la respuesta.
+ *   - Respuesta codificada en Base64 puro (sin JSON envoltorio).
  *
- * 2) Agrega a tu .env:
- *      FLOW_PRIVATE_KEY_PATH=/ruta/absoluta/secrets/flow_private.pem
- *      FLOW_PRIVATE_KEY_PASSPHRASE=   (déjalo vacío si tu llave no tiene passphrase)
+ * https://developers.facebook.com/documentation/business-messaging/whatsapp/flows/guides/implementingyourflowendpoint
  *
- * 3) En el Flow Builder, el "punto de conexión" debe apuntar a esta URL, ej:
- *      https://eiso.com.co/cualify/flow_data_endpoint.php
- *
- * 4) IMPORTANTE: cuando envíes la plantilla con el botón del Flow (whatsapp_api.php),
- *    el "flow_token" debe ser el número de teléfono del destinatario (o un ID único
- *    que tú controles), NO "unused". Ese es el ÚNICO dato que este endpoint recibe
- *    para saber a quién pertenece la sesión — ver la nota al final de este archivo.
+ * NOTA: Todas las funciones de BD usan PDO (no mysqli).
  */
 
-// ----------------------------------------------------------------------------
-// BLINDAJE DE SALIDA: la respuesta a Meta debe ser EXACTAMENTE la cadena base64,
-// ni un byte más. Un BOM, un salto de línea sobrante de algún require, o un
-// warning de PHP que se imprima aunque display_errors esté "off" en algunos
-// hostings, rompe silenciosamente el cuerpo. Capturamos TODA la salida en un
-// buffer y solo dejamos pasar lo que nosotros controlamos explícitamente.
-// ----------------------------------------------------------------------------
-ob_start();
-ini_set('display_errors', '0'); // no imprimir errores al cuerpo de la respuesta
-error_reporting(E_ALL);         // pero sí seguir registrándolos en el log
-
-require_once __DIR__ . '/vendor/autoload.php'; // autoloader de Composer (phpseclib3)
-require_once __DIR__ . '/lead_qualifier.php';  // trae config.php, whatsapp_api.php,
-                                                // pagespeed_api.php, google_calendar_api.php,
-                                                // appointment_slots.php y actualizarLead()/obtenerConexion()
+require_once __DIR__ . '/vendor/autoload.php';
+require_once __DIR__ . '/lead_qualifier.php';
 
 use phpseclib3\Crypt\RSA;
 use phpseclib3\Crypt\PublicKeyLoader;
+use phpseclib3\Crypt\AES;
 
 const FLOW_AES_TAG_LENGTH = 16;
+
+// ============================================================================
+// FUNCIONES DE CIFRADO / DESCIFRADO
+// ============================================================================
 
 /**
  * Descifra el cuerpo de la petición de Meta.
  * Devuelve ['payload' => array, 'aesKey' => string, 'iv' => string] o lanza Exception.
  */
 function descifrarPeticionFlow(array $body) {
-    $rutaLlave   = valorEntorno('FLOW_PRIVATE_KEY_PATH');
-    $passphrase  = valorEntorno('FLOW_PRIVATE_KEY_PASSPHRASE') ?: false;
+    $rutaLlave  = valorEntorno('FLOW_PRIVATE_KEY_PATH');
+    $passphrase = valorEntorno('FLOW_PRIVATE_KEY_PASSPHRASE') ?: false;
 
     if (!$rutaLlave || !is_file($rutaLlave)) {
         throw new RuntimeException('FLOW_PRIVATE_KEY_PATH no configurada o el archivo no existe.');
@@ -71,11 +54,13 @@ function descifrarPeticionFlow(array $body) {
         ->withHash('sha256')
         ->withMGFHash('sha256');
 
-    // 1) Desenvolver la llave AES (128 bits) con RSA-OAEP-SHA256
+    // 1) Desenvolver la llave AES con RSA-OAEP-SHA256
     $aesKey = $rsa->decrypt(base64_decode($body['encrypted_aes_key']));
+    if ($aesKey === false || $aesKey === null) {
+        throw new RuntimeException('No se pudo descifrar la llave AES con RSA-OAEP. Verifica que la llave privada coincida con la pública registrada en Meta.');
+    }
 
     // 2) Desencriptar el payload con AES-128-GCM
-    //    Los últimos 16 bytes del blob son el authentication tag de GCM.
     $decodedFlowData = base64_decode($body['encrypted_flow_data']);
     $cipherBody = substr($decodedFlowData, 0, -FLOW_AES_TAG_LENGTH);
     $tag        = substr($decodedFlowData, -FLOW_AES_TAG_LENGTH);
@@ -83,7 +68,15 @@ function descifrarPeticionFlow(array $body) {
 
     $plano = openssl_decrypt($cipherBody, 'aes-128-gcm', $aesKey, OPENSSL_RAW_DATA, $iv, $tag);
     if ($plano === false) {
-        throw new RuntimeException('No se pudo desencriptar el payload (AES-GCM falló).');
+        try {
+            $aes = new AES('gcm');
+            $aes->setKey($aesKey);
+            $aes->setNonce($iv);
+            $aes->setTag($tag);
+            $plano = $aes->decrypt($cipherBody);
+        } catch (Throwable $e) {
+            throw new RuntimeException('No se pudo desencriptar el payload: ' . $e->getMessage());
+        }
     }
 
     $payload = json_decode($plano, true);
@@ -96,48 +89,67 @@ function descifrarPeticionFlow(array $body) {
 
 /**
  * Cifra la respuesta con la MISMA llave AES pero el IV INVERTIDO (bit a bit),
- * tal como exige el protocolo, y la devuelve en base64 (string plano, sin JSON alrededor).
+ * y la devuelve en Base64 puro (sin JSON envoltorio).
  */
 function cifrarRespuestaFlow(array $datosRespuesta, $aesKey, $iv) {
+    if (strlen($aesKey) !== 16) {
+        throw new RuntimeException('La llave AES no tiene 16 bytes. Longitud: ' . strlen($aesKey));
+    }
+    if (strlen($iv) !== 16) {
+        throw new RuntimeException('El IV no tiene 16 bytes. Longitud: ' . strlen($iv));
+    }
+
     $flippedIv = '';
     for ($i = 0; $i < strlen($iv); $i++) {
         $flippedIv .= chr(~ord($iv[$i]) & 0xFF);
     }
 
     $plano = json_encode($datosRespuesta, JSON_UNESCAPED_UNICODE);
+    if ($plano === false) {
+        throw new RuntimeException('No se pudo serializar la respuesta: ' . json_last_error_msg());
+    }
+
     $tag = '';
     $cifrado = openssl_encrypt($plano, 'aes-128-gcm', $aesKey, OPENSSL_RAW_DATA, $flippedIv, $tag, '', FLOW_AES_TAG_LENGTH);
+
+    if ($cifrado === false) {
+        try {
+            $aes = new AES('gcm');
+            $aes->setKey($aesKey);
+            $aes->setNonce($flippedIv);
+            $aes->setTagLength(FLOW_AES_TAG_LENGTH);
+            $cifrado = $aes->encrypt($plano);
+            $tag = $aes->getTag();
+        } catch (Throwable $e) {
+            throw new RuntimeException('Fallback phpseclib también falló: ' . $e->getMessage());
+        }
+    }
+
+    if ($cifrado === false || $cifrado === '') {
+        throw new RuntimeException('El cifrado AES-GCM produjo un resultado vacío.');
+    }
 
     return base64_encode($cifrado . $tag);
 }
 
-/**
- * Asegura que exista una fila en `leads` para este teléfono (el Flow puede ser
- * el primer contacto, a diferencia del flujo conversacional que crea el lead en step 1).
- */
-function asegurarLeadFlow(mysqli $mysqli, $phone) {
-    $stmt = $mysqli->prepare("INSERT INTO leads (phone, step, status) VALUES (?, 0, 'en_calificacion') ON DUPLICATE KEY UPDATE phone = phone");
-    $stmt->bind_param('s', $phone);
-    $stmt->execute();
-}
+// ============================================================================
+// FUNCIONES DE BASE DE DATOS (PDO)
+// ============================================================================
 
 /**
- * Único punto de salida del script: descarta TODO lo que haya quedado en el
- * buffer de salida (warnings, BOM, espacios de algún require, etc.) y envía
- * exactamente el cuerpo que nosotros construimos, nada más.
+ * Asegura que exista una fila en `leads` para este teléfono.
+ * (Versión PDO)
  */
-function salirLimpio($statusCode, $body = '', $contentType = null) {
-    while (ob_get_level() > 0) {
-        ob_end_clean();
+function asegurarLeadFlow(PDO $pdo, $phone) {
+    try {
+        $stmt = $pdo->prepare(
+            "INSERT INTO leads (phone, step, status) VALUES (?, 0, 'en_calificacion')
+             ON DUPLICATE KEY UPDATE phone = phone"
+        );
+        $stmt->execute([$phone]);
+    } catch (PDOException $e) {
+        error_log('[asegurarLeadFlow] Error: ' . $e->getMessage());
     }
-    http_response_code($statusCode);
-    if ($contentType) {
-        header('Content-Type: ' . $contentType);
-    }
-    if ($body !== '') {
-        echo $body;
-    }
-    exit;
 }
 
 // ============================================================================
@@ -148,8 +160,8 @@ $rawBody = file_get_contents('php://input');
 $body = json_decode($rawBody, true);
 
 if (!is_array($body) || empty($body['encrypted_flow_data']) || empty($body['encrypted_aes_key']) || empty($body['initial_vector'])) {
-    // Petición mal formada: no es un sobre cifrado válido de Meta.
-    salirLimpio(400);
+    http_response_code(400);
+    exit;
 }
 
 try {
@@ -157,12 +169,16 @@ try {
 } catch (Throwable $e) {
     error_log('[flow_data_endpoint] Error descifrando: ' . $e->getMessage());
     // 421: le indica a Meta que la llave pública/privada puede estar desincronizada.
-    salirLimpio(421);
+    http_response_code(421);
+    exit;
 }
 
 $payload = $descifrado['payload'];
 $aesKey  = $descifrado['aesKey'];
 $iv      = $descifrado['iv'];
+
+// Log de diagnóstico (útil durante la puesta en marcha; puedes quitarlo después)
+error_log('[flow_data_endpoint] aesKey length: ' . strlen($aesKey) . ', iv length: ' . strlen($iv));
 
 $accion = $payload['action'] ?? null;
 
@@ -172,176 +188,117 @@ try {
         $respuesta = ['version' => '3.0', 'data' => ['status' => 'active']];
 
     } elseif ($accion === 'INIT') {
-        // Primera carga del Flow: no necesitamos precargar nada dinámico en JOIN_NOW.
+        // Primera carga del Flow: no precargamos nada dinámico en JOIN_NOW.
         $respuesta = ['version' => '3.0', 'screen' => 'JOIN_NOW', 'data' => new stdClass()];
 
     } elseif ($accion === 'data_exchange') {
-        $pantallaActual = $payload['screen'] ?? '';
+        $pantallaActual  = $payload['screen'] ?? '';
         $datosAcumulados = $payload['data'] ?? [];
-        $phone = $payload['flow_token'] ?? null; // ver nota de configuración al final del archivo
+        $phone           = $payload['flow_token'] ?? null; // ver nota de configuración al final
 
-        $mysqli = obtenerConexion();
+        $pdo = obtenerConexion();
         if ($phone) {
-            asegurarLeadFlow($mysqli, $phone);
+            asegurarLeadFlow($pdo, $phone);
         }
 
         switch ($pantallaActual) {
 
             case 'WEBSITE_URL':
+                // 1. Normalizar URL (sin análisis)
                 $url = normalizarUrlSitio($datosAcumulados['website_url'] ?? '');
                 if ($url === null) {
-                    // URL inválida: la reenviamos a la misma pantalla (el Flow no tiene
-                    // un campo de error dedicado aquí, así que forzamos https:// y seguimos
-                    // con el mejor intento; si PageSpeed falla, se informa en el siguiente paso).
                     $url = 'https://' . preg_replace('#^https?://#i', '', trim($datosAcumulados['website_url'] ?? ''));
                 }
 
-                $resultado = consultarRendimientoSitio($url);
-                if ($resultado['ok']) {
-                    $score = $resultado['score'];
-                    $clasif = clasificarPorRendimiento($score);
-                    $scoreBucket = $clasif['clave'];
-                    $scoreMessage = "Analizamos {$url} con PageSpeed Insights.\n\n"
-                        . "Puntaje de rendimiento: {$score}/100\n\n"
-                        . $clasif['mensaje'];
-                } else {
-                    $score = 0;
-                    $scoreBucket = 'error';
-                    $scoreMessage = "Analizamos {$url}, pero no pudimos completar el análisis automático ("
-                        . $resultado['error'] . "). No te preocupes, un asesor lo revisará contigo.";
-                }
-
+                // 2. Guardar URL + datos recolectados y encolar el job.
+                //    Envolvemos en try/catch para que, si falla algo no crítico,
+                //    el Flow pueda cerrarse igualmente con SUCCESS.
                 if ($phone) {
-                    actualizarLead($mysqli, $phone, [
-                        'url_sitio'       => $url,
-                        'pagespeed_score' => (string) $score,
-                        'clasificacion'   => $scoreBucket,
-                    ]);
+                    try {
+                        actualizarLead($pdo, $phone, [
+                            'url_sitio' => $url,
+                            'name'      => $datosAcumulados['name'] ?? '',
+                            'email'     => $datosAcumulados['email'] ?? '',
+                        ]);
+
+                        encolarTrabajoPagespeed($pdo, $phone, $url, [
+                            'email' => $datosAcumulados['email'] ?? '',
+                            'name'  => $datosAcumulados['name'] ?? '',
+                        ]);
+                    } catch (Throwable $e) {
+                        error_log('[flow_data_endpoint] Error guardando/encolando: ' . $e->getMessage());
+                        // No relanzamos: el Flow debe cerrarse igual con SUCCESS.
+                    }
                 }
 
+                // 3. Responder INMEDIATAMENTE con SUCCESS (sin esperar PageSpeed)
                 $respuesta = [
                     'version' => '3.0',
-                    'screen'  => 'PAGESPEED_RESULT',
-                    'data'    => array_merge($datosAcumulados, [
-                        'website_url'           => $url,
-                        'performance_score'     => $score,
-                        'score_bucket'          => $scoreBucket,
-                        'score_message'         => $scoreMessage,
-                        // WhatsApp Flows NO permite mezclar texto literal con una variable
-                        // (ej. "Puntaje: ${data.x}/100" se muestra literal, sin interpolar).
-                        // Por eso armamos la frase completa aquí y la pantalla solo referencia
-                        // el campo entero: "${data.website_analyzed_text}".
-                        'website_analyzed_text' => "Analizamos {$url} con PageSpeed Insights.",
-                        'score_heading_text'    => "Puntaje de rendimiento: {$score}/100",
-                    ]),
-                ];
-                break;
-
-            case 'PAGESPEED_RESULT':
-                $slots = construirSlotsPlanoFlow(5);
-                $respuesta = [
-                    'version' => '3.0',
-                    'screen'  => 'APPOINTMENT_SLOTS',
-                    'data'    => array_merge($datosAcumulados, ['slots' => $slots]),
-                ];
-                break;
-
-            case 'APPOINTMENT_SLOTS':
-                $slotId = $datosAcumulados['appointment_slot'] ?? '';
-                $franja = parsearSlotFlow($slotId);
-
-                if ($franja === null) {
-                    // Selección inválida: reenviamos la misma pantalla con la lista otra vez.
-                    $respuesta = [
-                        'version' => '3.0',
-                        'screen'  => 'APPOINTMENT_SLOTS',
-                        'data'    => array_merge($datosAcumulados, ['slots' => construirSlotsPlanoFlow(5)]),
-                    ];
-                    break;
-                }
-
-                $advisorEmail = valorEntorno('GOOGLE_CALENDAR_ID');
-                $descripcionEvento = "Lead calificado vía WhatsApp Flow.\n"
-                    . "Teléfono: " . ($phone ?? 'desconocido') . "\n"
-                    . "Nombre: " . ($datosAcumulados['name'] ?? '') . "\n"
-                    . "Email: " . ($datosAcumulados['email'] ?? '') . "\n"
-                    . "Sitio web: " . ($datosAcumulados['website_url'] ?? '') . "\n"
-                    . "Puntaje PageSpeed: " . ($datosAcumulados['performance_score'] ?? '') . "/100\n"
-                    . "Clasificación: " . ($datosAcumulados['score_bucket'] ?? '') . "\n";
-
-                $resultadoEvento = crearEventoCalendar(
-                    'Llamada con lead ' . ($phone ?? ''),
-                    $descripcionEvento,
-                    $franja['inicio'],
-                    $franja['fin'],
-                    $datosAcumulados['email'] ?? null
-                );
-
-                if (!$resultadoEvento['ok']) {
-                    error_log('[flow_data_endpoint] Error creando evento en Calendar: ' . $resultadoEvento['error']);
-                }
-
-                if ($phone) {
-                    actualizarLead($mysqli, $phone, array_filter([
-                        'status'          => 'calificado',
-                        'step'            => '99',
-                        'cita_fecha'      => $franja['inicio']->format('Y-m-d'),
-                        'cita_hora'       => $franja['inicio']->format('H:i:s'),
-                        'google_event_id' => $resultadoEvento['ok'] ? $resultadoEvento['event_id'] : null,
-                    ]));
-                }
-
-                $respuesta = [
-                    'version' => '3.0',
-                    'screen'  => 'CONFIRMACION',
+                    'screen'  => 'SUCCESS',
                     'data'    => [
                         'name'              => $datosAcumulados['name'] ?? '',
-                        'appointment_slot'  => $slotId,
-                        'appointment_label' => formatearFranjaLegible($franja['inicio']),
-                        'advisor_email'     => $advisorEmail,
+                        'appointment_label' => 'Analizando tu sitio...',
                     ],
                 ];
                 break;
 
             default:
-                // Pantalla no reconocida: devolvemos lo mismo que llegó, sin cambios.
-                $respuesta = ['version' => '3.0', 'screen' => $pantallaActual, 'data' => $datosAcumulados];
+                // Pantalla no reconocida: devolvemos lo mismo que llegó.
+                $respuesta = [
+                    'version' => '3.0',
+                    'screen'  => $pantallaActual,
+                    'data'    => $datosAcumulados,
+                ];
                 break;
         }
 
-        $mysqli->close();
+        // PDO no requiere close() explícito. Liberamos la referencia.
+        $pdo = null;
 
     } else {
         // Acción desconocida (BACK, error del cliente, etc.): responder neutro.
-        $respuesta = ['version' => '3.0', 'screen' => $payload['screen'] ?? '', 'data' => $payload['data'] ?? new stdClass()];
+        $respuesta = [
+            'version' => '3.0',
+            'screen'  => $payload['screen'] ?? '',
+            'data'    => $payload['data'] ?? new stdClass(),
+        ];
     }
 
 } catch (Throwable $e) {
     error_log('[flow_data_endpoint] Error de negocio: ' . $e->getMessage());
-    salirLimpio(500);
+    http_response_code(500);
+    exit;
 }
 
-$respuestaCifrada = cifrarRespuestaFlow($respuesta, $aesKey, $iv);
+try {
+    $respuestaCifrada = cifrarRespuestaFlow($respuesta, $aesKey, $iv);
+} catch (Throwable $e) {
+    error_log('[flow_data_endpoint] Error cifrando respuesta: ' . $e->getMessage());
+    http_response_code(500);
+    exit;
+}
 
-error_log('[flow_data_endpoint] OK - action=' . ($accion ?? '?') . ' screen_in=' . ($payload['screen'] ?? '?') . ' screen_out=' . ($respuesta['screen'] ?? '?') . ' bytes=' . strlen($respuestaCifrada));
-
-salirLimpio(200, $respuestaCifrada, 'text/plain');
+header('Content-Type: text/plain');
+echo $respuestaCifrada;
 
 /**
  * ==========================================================================
  * NOTA IMPORTANTE sobre flow_token
  * ==========================================================================
  * El único dato que Meta te da para identificar la sesión es "flow_token",
- * y su valor es el que TÚ le pasaste al enviar el botón del Flow. Ahora mismo,
- * en test_send.php, se está enviando como 'unused'. Para que este endpoint
- * pueda guardar el lead correcto y armar bien la cita en Calendar, cambia eso
- * por el número de teléfono del destinatario, por ejemplo:
+ * y su valor es el que TÚ le pasaste al enviar el botón del Flow. Debe ser
+ * el número de teléfono del destinatario (o un ID único que tú controles).
+ *
+ * Ejemplo al enviar la plantilla:
  *
  *   enviarPlantillaWhatsApp($to, "consultar_tarifas", "en", [], [
  *       [
  *           'sub_type'   => 'flow',
  *           'index'      => 0,
- *           'flow_token' => $to,   // <-- antes decía 'unused'
+ *           'flow_token' => $to,   // <-- NO "unused"
  *       ]
  *   ]);
+ *
+ * Si envías "unused", este endpoint no sabrá a qué lead pertenece la sesión
+ * y no podrá guardar la URL ni encolar el job.
  */
