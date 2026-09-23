@@ -18,7 +18,7 @@ echo "<strong>Destino:</strong> " . htmlspecialchars($to) . "<br>";
 // por lo que SIEMPRE debe incluirse este componente, aunque el Flow no reciba datos iniciales.
 // flow_token = número de teléfono: es el único dato que flow_data_endpoint.php recibe
 // para saber a qué lead/conversación pertenece cada intercambio de datos del Flow.
-$respuestaRaw = enviarPlantillaWhatsApp($to, "consultar_tarifas", "en", [], [
+$respuestaRaw = enviarPlantillaWhatsApp($to, "consultar_servicios", "en", [], [
     [
         'sub_type'   => 'flow',
         'index'      => 0,

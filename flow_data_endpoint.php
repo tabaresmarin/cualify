@@ -33,6 +33,17 @@
  *    para saber a quién pertenece la sesión — ver la nota al final de este archivo.
  */
 
+// ----------------------------------------------------------------------------
+// BLINDAJE DE SALIDA: la respuesta a Meta debe ser EXACTAMENTE la cadena base64,
+// ni un byte más. Un BOM, un salto de línea sobrante de algún require, o un
+// warning de PHP que se imprima aunque display_errors esté "off" en algunos
+// hostings, rompe silenciosamente el cuerpo. Capturamos TODA la salida en un
+// buffer y solo dejamos pasar lo que nosotros controlamos explícitamente.
+// ----------------------------------------------------------------------------
+ob_start();
+ini_set('display_errors', '0'); // no imprimir errores al cuerpo de la respuesta
+error_reporting(E_ALL);         // pero sí seguir registrándolos en el log
+
 require_once __DIR__ . '/vendor/autoload.php'; // autoloader de Composer (phpseclib3)
 require_once __DIR__ . '/lead_qualifier.php';  // trae config.php, whatsapp_api.php,
                                                 // pagespeed_api.php, google_calendar_api.php,
@@ -110,6 +121,25 @@ function asegurarLeadFlow(mysqli $mysqli, $phone) {
     $stmt->execute();
 }
 
+/**
+ * Único punto de salida del script: descarta TODO lo que haya quedado en el
+ * buffer de salida (warnings, BOM, espacios de algún require, etc.) y envía
+ * exactamente el cuerpo que nosotros construimos, nada más.
+ */
+function salirLimpio($statusCode, $body = '', $contentType = null) {
+    while (ob_get_level() > 0) {
+        ob_end_clean();
+    }
+    http_response_code($statusCode);
+    if ($contentType) {
+        header('Content-Type: ' . $contentType);
+    }
+    if ($body !== '') {
+        echo $body;
+    }
+    exit;
+}
+
 // ============================================================================
 // MANEJO DE LA PETICIÓN
 // ============================================================================
@@ -119,8 +149,7 @@ $body = json_decode($rawBody, true);
 
 if (!is_array($body) || empty($body['encrypted_flow_data']) || empty($body['encrypted_aes_key']) || empty($body['initial_vector'])) {
     // Petición mal formada: no es un sobre cifrado válido de Meta.
-    http_response_code(400);
-    exit;
+    salirLimpio(400);
 }
 
 try {
@@ -128,8 +157,7 @@ try {
 } catch (Throwable $e) {
     error_log('[flow_data_endpoint] Error descifrando: ' . $e->getMessage());
     // 421: le indica a Meta que la llave pública/privada puede estar desincronizada.
-    http_response_code(421);
-    exit;
+    salirLimpio(421);
 }
 
 $payload = $descifrado['payload'];
@@ -173,11 +201,14 @@ try {
                     $score = $resultado['score'];
                     $clasif = clasificarPorRendimiento($score);
                     $scoreBucket = $clasif['clave'];
-                    $scoreMessage = $clasif['mensaje'];
+                    $scoreMessage = "Analizamos {$url} con PageSpeed Insights.\n\n"
+                        . "Puntaje de rendimiento: {$score}/100\n\n"
+                        . $clasif['mensaje'];
                 } else {
                     $score = 0;
                     $scoreBucket = 'error';
-                    $scoreMessage = 'No pudimos analizar tu sitio automáticamente (' . $resultado['error'] . '). No te preocupes, un asesor lo revisará contigo.';
+                    $scoreMessage = "Analizamos {$url}, pero no pudimos completar el análisis automático ("
+                        . $resultado['error'] . "). No te preocupes, un asesor lo revisará contigo.";
                 }
 
                 if ($phone) {
@@ -192,10 +223,16 @@ try {
                     'version' => '3.0',
                     'screen'  => 'PAGESPEED_RESULT',
                     'data'    => array_merge($datosAcumulados, [
-                        'website_url'       => $url,
-                        'performance_score' => $score,
-                        'score_bucket'      => $scoreBucket,
-                        'score_message'     => $scoreMessage,
+                        'website_url'           => $url,
+                        'performance_score'     => $score,
+                        'score_bucket'          => $scoreBucket,
+                        'score_message'         => $scoreMessage,
+                        // WhatsApp Flows NO permite mezclar texto literal con una variable
+                        // (ej. "Puntaje: ${data.x}/100" se muestra literal, sin interpolar).
+                        // Por eso armamos la frase completa aquí y la pantalla solo referencia
+                        // el campo entero: "${data.website_analyzed_text}".
+                        'website_analyzed_text' => "Analizamos {$url} con PageSpeed Insights.",
+                        'score_heading_text'    => "Puntaje de rendimiento: {$score}/100",
                     ]),
                 ];
                 break;
@@ -256,7 +293,7 @@ try {
 
                 $respuesta = [
                     'version' => '3.0',
-                    'screen'  => 'SUCCESS',
+                    'screen'  => 'CONFIRMACION',
                     'data'    => [
                         'name'              => $datosAcumulados['name'] ?? '',
                         'appointment_slot'  => $slotId,
@@ -281,14 +318,14 @@ try {
 
 } catch (Throwable $e) {
     error_log('[flow_data_endpoint] Error de negocio: ' . $e->getMessage());
-    http_response_code(500);
-    exit;
+    salirLimpio(500);
 }
 
 $respuestaCifrada = cifrarRespuestaFlow($respuesta, $aesKey, $iv);
 
-header('Content-Type: text/plain');
-echo $respuestaCifrada;
+error_log('[flow_data_endpoint] OK - action=' . ($accion ?? '?') . ' screen_in=' . ($payload['screen'] ?? '?') . ' screen_out=' . ($respuesta['screen'] ?? '?') . ' bytes=' . strlen($respuestaCifrada));
+
+salirLimpio(200, $respuestaCifrada, 'text/plain');
 
 /**
  * ==========================================================================
