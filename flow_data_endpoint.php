@@ -215,11 +215,32 @@ try {
                 //    el Flow pueda cerrarse igualmente con SUCCESS.
                 if ($phone) {
                     try {
-                        actualizarLead($pdo, $phone, [
+                        // "categories", "has_website" y "last_update" viajan ACUMULADOS
+                        // en "data" desde que el usuario los llenó en CATEGORIES y
+                        // HAS_WEBSITE; WhatsApp los reenvía completos en cada
+                        // data_exchange posterior, incluido este de WEBSITE_URL.
+                        $categorias = $datosAcumulados['categories'] ?? [];
+                        if (!is_array($categorias)) {
+                            $categorias = [$categorias];
+                        }
+
+                        $camposLead = [
                             'url_sitio' => $url,
                             'name'      => $datosAcumulados['name'] ?? '',
                             'email'     => $datosAcumulados['email'] ?? '',
-                        ]);
+                        ];
+                        if ($categorias) {
+                            $camposLead['servicio_interes'] = implode(', ', $categorias);
+                        }
+                        if (!empty($datosAcumulados['has_website'])) {
+                            // El Flow ya envía exactamente 'si' / 'no', igual que el ENUM de la columna.
+                            $camposLead['tiene_sitio_web'] = $datosAcumulados['has_website'];
+                        }
+                        if (!empty($datosAcumulados['last_update'])) {
+                            $camposLead['antiguedad_sitio'] = $datosAcumulados['last_update'];
+                        }
+
+                        actualizarLead($pdo, $phone, $camposLead);
 
                         encolarTrabajoPagespeed($pdo, $phone, $url, [
                             'email' => $datosAcumulados['email'] ?? '',

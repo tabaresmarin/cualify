@@ -210,9 +210,12 @@ function procesarLeadFlowAsincrono($phone, PDO &$pdo) {
 function procesarMensajeEntrante($phone, $texto, PDO $pdo) {
     $textoLower = strtolower(trim($texto));
 
+    // Log de diagnóstico
+    error_log("[procesarMensajeEntrante] phone=$phone texto='$texto'");
+
     // Obtener estado actual del lead
     try {
-        $stmt = $pdo->prepare("SELECT step, url_sitio, pagespeed_score, clasificacion FROM leads WHERE phone = ? LIMIT 1");
+        $stmt = $pdo->prepare("SELECT step, status, url_sitio, pagespeed_score, clasificacion, cita_fecha, cita_hora FROM leads WHERE phone = ? LIMIT 1");
         $stmt->execute([$phone]);
         $lead = $stmt->fetch(PDO::FETCH_ASSOC);
     } catch (PDOException $e) {
@@ -221,6 +224,7 @@ function procesarMensajeEntrante($phone, $texto, PDO $pdo) {
     }
 
     if (!$lead) {
+        // Lead nuevo
         try {
             $stmt = $pdo->prepare("INSERT INTO leads (phone, step, status) VALUES (?, 1, 'en_calificacion')");
             $stmt->execute([$phone]);
@@ -232,19 +236,55 @@ function procesarMensajeEntrante($phone, $texto, PDO $pdo) {
         return;
     }
 
-    $step = (int) ($lead['step'] ?? 0);
+    $step   = (string) ($lead['step'] ?? '0');
+    $status = $lead['status'] ?? '';
 
-    // ------------------------------------------------------------------------
-    // USUARIO RESPONDE "AGENDAR" → Mostrar lista interactiva de slots
-    // ------------------------------------------------------------------------
+    // ========================================================================
+    // STEP 99: CITA YA AGENDADA
+    // No ofrecer agendar de nuevo. Ofrecer opciones útiles.
+    // ========================================================================
+    if ($step === '99' || $status === 'calificado') {
+        // Si el usuario quiere cancelar o reprogramar
+        if (strpos($textoLower, 'cancel') !== false || strpos($textoLower, 'reprogram') !== false || strpos($textoLower, 'cambiar') !== false) {
+            // Volver a step 2 y mostrar los slots disponibles
+            actualizarLead($pdo, $phone, ['step' => '2', 'status' => 'en_calificacion']);
+            enviarMensajeTexto($phone, "Sin problema. Vamos a reagendar tu cita. Te muestro los horarios disponibles:");
+            enviarListaSlots($phone, $pdo);
+            return;
+        }
+
+        // Si dice "agendar" estando ya agendado
+        if (strpos($textoLower, 'agendar') !== false) {
+            $fecha = $lead['cita_fecha'] ?? '';
+            $hora  = $lead['cita_hora'] ?? '';
+            enviarMensajeTexto($phone,
+                "Ya tienes una cita agendada para el *{$fecha}* a las *{$hora}*.\n\n"
+                . "Si necesitas *cancelar* o *reprogramar*, solo dime."
+            );
+            return;
+        }
+
+        // Cualquier otro mensaje: responder de forma amable y contextual
+        $fecha = $lead['cita_fecha'] ?? '';
+        $hora  = $lead['cita_hora'] ?? '';
+        enviarMensajeTexto($phone,
+            "¡Gracias por escribir! Tu cita ya está confirmada para el *{$fecha}* a las *{$hora}*.\n\n"
+            . "Si necesitas *cancelar* o *reprogramar*, solo dime. Un asesor de EISO se pondrá en contacto contigo pronto."
+        );
+        return;
+    }
+
+    // ========================================================================
+    // Usuario responde "AGENDAR" → Mostrar lista de slots
+    // ========================================================================
     if (strpos($textoLower, 'agendar') !== false) {
         enviarListaSlots($phone, $pdo);
         return;
     }
 
-    // ------------------------------------------------------------------------
-    // USUARIO RESPONDE CON UN NÚMERO (1-5) → Selección por texto (fallback)
-    // ------------------------------------------------------------------------
+    // ========================================================================
+    // Usuario responde con un número (1-5) → Selección por texto
+    // ========================================================================
     if (preg_match('/^\s*([1-9])\s*$/', $textoLower, $m)) {
         $indice = (int) $m[1];
         $slots  = construirSlotsPlanoFlow(5);
@@ -254,10 +294,10 @@ function procesarMensajeEntrante($phone, $texto, PDO $pdo) {
         }
     }
 
-    // ------------------------------------------------------------------------
-    // USUARIO ESTÁ EN STEP 1 → Esperando URL
-    // ------------------------------------------------------------------------
-    if ($step === 1) {
+    // ========================================================================
+    // Usuario está en STEP 1 → Esperando URL
+    // ========================================================================
+    if ($step === '1') {
         $url = normalizarUrlSitio($texto);
         if ($url === null) {
             enviarMensajeTexto($phone, "No pude reconocer una URL válida. Por favor envíala con formato https://tusitio.com");
@@ -291,10 +331,43 @@ function procesarMensajeEntrante($phone, $texto, PDO $pdo) {
         return;
     }
 
-    // ------------------------------------------------------------------------
-    // FALLBACK
-    // ------------------------------------------------------------------------
-    enviarMensajeTexto($phone, "Entiendo. Si quieres agendar una llamada de asesoría, responde *AGENDAR*. Si necesitas enviar tu sitio web de nuevo, escribe *URL*.");
+    // ========================================================================
+    // STEP 2: Ya tiene diagnóstico, esperando que agende
+    // ========================================================================
+    if ($step === '2') {
+        // Si el usuario escribe algo que no es "AGENDAR" ni un número,
+        // recordarle amablemente las opciones.
+        enviarMensajeTexto($phone,
+            "¿Listo para agendar tu asesoría? Responde *AGENDAR* y te muestro los horarios disponibles.\n\n"
+            . "Si tu sitio cambió o quieres analizar otro, escribe *URL*."
+        );
+        return;
+    }
+
+    // ========================================================================
+    // STEP 1.5: Análisis en curso (raro, pero por si acaso)
+    // ========================================================================
+    if ($step === '1.5') {
+        enviarMensajeTexto($phone, "Estoy analizando tu sitio, dame un momento por favor. Te escribiré en cuanto termine.");
+        return;
+    }
+
+    // ========================================================================
+    // FALLBACK: Cualquier otro estado
+    // ========================================================================
+    if (strpos($textoLower, 'url') !== false) {
+        // El usuario quiere enviar una URL, pero no está en step 1
+        actualizarLead($pdo, $phone, ['step' => '1']);
+        enviarMensajeTexto($phone, "Perfecto, envíame la URL del sitio que quieres analizar (ej. https://tusitio.com).");
+        return;
+    }
+
+    enviarMensajeTexto($phone,
+        "Entiendo. Para continuar, puedes:\n\n"
+        . "• Escribir *AGENDAR* si quieres agendar una llamada.\n"
+        . "• Escribir *URL* si quieres analizar un sitio web.\n"
+        . "• Escribir *AYUDA* si necesitas asistencia."
+    );
 }
 
 /**
