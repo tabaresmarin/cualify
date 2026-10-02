@@ -2,7 +2,9 @@
 vendor/
 private.pem
 public.pem
-caldav-333715-85f56a0e9869.json
+caldav-*.json
 cualify.code-workspace
 worker.log
+worker_ia.log
+cleanup.log
 error_log
