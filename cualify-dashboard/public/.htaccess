@@ -1,0 +1,43 @@
+# Panel Cualify — front controller.
+#
+# Este archivo debe quedar en el directorio que se sirve publicamente. Con el
+# docroot actual (/var/www/html) el panel vive en /cualify/cualify-dashboard/public,
+# asi que las reglas de aqui son relativas a public/ y no necesitan RewriteBase.
+
+<IfModule mod_rewrite.c>
+    RewriteEngine On
+
+    # No reescribir archivos que existen en disco (assets) ni directorios.
+    RewriteCond %{REQUEST_FILENAME} !-f
+    RewriteCond %{REQUEST_FILENAME} !-d
+    RewriteRule ^ index.php [QSA,L]
+</IfModule>
+
+<IfModule mod_headers.c>
+    Header always set X-Content-Type-Options "nosniff"
+    Header always set X-Frame-Options "SAMEORIGIN"
+    Header always set Referrer-Policy "no-referrer-when-downgrade"
+    Header always unset X-Powered-By
+</IfModule>
+
+# display_errors se deja en off aqui porque el bot ya sufria con el override de
+# .user.ini: los notices se imprimian dentro de las respuestas que Meta espera
+# limpias. El panel usa el mismo criterio y manda todo a error_log.
+<IfModule mod_php.c>
+    php_flag display_errors off
+    php_flag log_errors on
+</IfModule>
+
+# Sin listados de directorio y sin servir archivos que no Deben existir en public/.
+Options -Indexes
+DirectoryIndex index.php
+
+<FilesMatch "^\.|\.(sql|md|log|json|lock|example)$">
+    Require all denied
+</FilesMatch>
+<IfModule !mod_authz_core.c>
+    <FilesMatch "^\.|\.(sql|md|log|json|lock|example)$">
+        Order deny,allow
+        Deny from all
+    </FilesMatch>
+</IfModule>

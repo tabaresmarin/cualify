@@ -1,0 +1,18 @@
+{
+    "name": "eiso/cualify-dashboard",
+    "description": "Panel de control interno para el bot de qualificação de leads de EISO",
+    "type": "project",
+    "require": {
+        "php": ">=8.2",
+        "ext-pdo": "*",
+        "ext-json": "*"
+    },
+    "autoload": {
+        "psr-4": {
+            "App\\": "app/"
+        }
+    },
+    "config": {
+        "sort-packages": true
+    }
+}

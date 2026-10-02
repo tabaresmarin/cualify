@@ -1,0 +1,55 @@
+# Panel Cualify — proteccion de los directorios internos.
+#
+# IMPORTANTE: aquí NO se puede usar "Require all denied" para proteger todo el
+# subproyecto. Apache fusiona la configuracion de authorization de los
+# directorios padre con los hijos, asi que un deny global en esta carpeta
+# terminaba devolviendo 403 tambien para public/ (front controller y assets).
+#
+# En su lugar cada directorio sensible trae su propio .htaccess, y las reglas
+# de aqui son la segunda capa: si mod_rewrite no estuviera disponible, el
+# deny por directorio sigue aplicando.
+
+Options -Indexes
+
+<IfModule mod_headers.c>
+    # El panel nunca debe cachearse: datos en vivo del bot y, sobre todo, para
+    # que un 403 o 404 generado por Apache no quede pegado en el navegador
+    # despues de corregir el .htaccess (PHP ya manda no-store en sus respuestas).
+    Header always set Cache-Control "no-store, no-cache, must-revalidate"
+    Header always set Pragma "no-cache"
+    Header always set Expires "0"
+</IfModule>
+
+<IfModule mod_rewrite.c>
+    RewriteEngine On
+
+    # La raiz del panel no es un punto de entrada (solo public/ lo es), pero
+    # responder 403 confunde: si alguien pega .../cualify-dashboard/ sin
+    # /public lo llevamos al front controller. Va antes del deny de abajo.
+    # El prefijo se toma de REQUEST_URI porque en un .htaccess de subdirectorio
+    # una sustitucion relativa sin "/" inicial se resolveria contra el docroot
+    # del sistema de archivos (/var/www/html/...) en vez de contra la URL.
+    RewriteCond %{REQUEST_URI} !/$
+    RewriteRule ^/?$ %{REQUEST_URI}/public/ [R=302,L,NE]
+    RewriteRule ^/?$ %{REQUEST_URI}public/ [R=302,L,NE]
+
+    # Solo public/ es publico. Todo lo demas (README.md, composer.json, .env,
+    # app/, config/, database/, bin/, vendor/) responde 403.
+    RewriteRule ^(?!public(?:/|$)) - [F,L]
+
+    # Archivos ocultos (.env, .git) en cualquier nivel, con excepcion de
+    # .well-known por si el hosting lo usa para verificacion de dominio.
+    RewriteRule (^|/)\.(?!well-known) - [F,L]
+</IfModule>
+
+# El .env vive en esta carpeta y es un archivo de texto plano: se sirve si
+# alguien lo pide por HTTP.
+<FilesMatch "^\.env$">
+    Require all denied
+</FilesMatch>
+<IfModule !mod_authz_core.c>
+    <FilesMatch "^\.env$">
+        Order deny,allow
+        Deny from all
+    </FilesMatch>
+</IfModule>
