@@ -205,3 +205,45 @@ function enviarPlantillaWhatsApp($to, $nombrePlantilla, $codigoIdioma = "es", $p
 
     return $respuesta;
 }
+
+/**
+ * Marca un mensaje del usuario como "leído" y muestra el indicador de
+ * "escribiendo..." en WhatsApp. Requiere el message_id del mensaje del usuario.
+ *
+ * @param string $messageId  ID del mensaje del usuario (wamid....)
+ * @return array
+ */
+function mostrarTypingIndicator(string $messageId): array {
+    $url = 'https://graph.facebook.com/v21.0/' . WA_PHONE_NUMBER_ID . '/messages';
+
+    $payload = [
+        'messaging_product' => 'whatsapp',
+        'status'            => 'read',
+        'message_id'        => $messageId,
+        'typing_indicator'  => [
+            'type' => 'text',
+        ],
+    ];
+
+    $ch = curl_init($url);
+    curl_setopt_array($ch, [
+        CURLOPT_HTTPHEADER => [
+            'Authorization: Bearer ' . WA_ACCESS_TOKEN,
+            'Content-Type: application/json',
+        ],
+        CURLOPT_POST           => true,
+        CURLOPT_POSTFIELDS     => json_encode($payload, JSON_UNESCAPED_UNICODE),
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_SSL_VERIFYPEER => true,
+        CURLOPT_TIMEOUT        => 10,
+    ]);
+
+    $respuesta = curl_exec($ch);
+    $resultado = [
+        'http_code' => curl_getinfo($ch, CURLINFO_HTTP_CODE),
+        'respuesta' => $respuesta,
+        'error'     => curl_error($ch),
+    ];
+    curl_close($ch);
+    return $resultado;
+}

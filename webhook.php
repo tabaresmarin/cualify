@@ -1,18 +1,22 @@
 <?php
 /**
  * webhook.php — Punto de entrada de WhatsApp Cloud API (Cualify EISO).
- * Ubicación: /home/muuk9x7m9to5/public_html/cualify/webhook.php
  *
- * Todas las funciones de base de datos usan PDO.
+ * ARQUITECTURA ASÍNCRONA:
+ *   - Este archivo NO procesa la lógica de negocio (evita timeouts de Meta).
+ *   - Solo verifica la petición, encola los mensajes en `jobs_queue` y
+ *     responde 200 OK inmediatamente.
+ *   - worker_ia.php (cron) toma los jobs y los procesa con IA + envía por WhatsApp.
+ *
+ * Ubicación: /home/muuk9x7m9to5/public_html/cualify/webhook.php
  */
 
 // ============================================================================
-// SILENCIAR WARNINGS Y NOTICES
-// Meta espera respuestas limpias. Cualquier warning rompe la verificación.
+// SILENCIAR OUTPUT — Meta espera respuestas limpias
 // ============================================================================
 error_reporting(E_ALL);
-ini_set('display_errors', '0');        // NO mostrar errores en la respuesta
-ini_set('log_errors', '1');            // SÍ guardarlos en el log
+ini_set('display_errors', '0');
+ini_set('log_errors', '1');
 
 require_once __DIR__ . '/config.php';
 require_once __DIR__ . '/lead_qualifier.php';
@@ -21,28 +25,26 @@ require_once __DIR__ . '/database.php';
 
 // ============================================================================
 // VERIFICACIÓN DEL WEBHOOK (GET)
-// Meta envía un GET con hub.mode=subscribe, hub.verify_token y hub.challenge
 // ============================================================================
 if ($_SERVER['REQUEST_METHOD'] === 'GET') {
     $modo      = $_GET['hub_mode'] ?? '';
     $token     = $_GET['hub_verify_token'] ?? '';
     $challenge = $_GET['hub_challenge'] ?? '';
 
-    $tokenEsperado = valorEntorno('WA_VERIFY_TOKEN');
+    $tokenEsperado = valorEntorno('WHATSAPP_VERIFY_TOKEN');
 
-    // Log de la petición de verificación (útil para depurar)
-    error_log('[webhook] VERIFICACIÓN GET — modo=' . $modo . ' token_recibido=' . substr($token, 0, 6) . '... token_esperado=' . substr((string)$tokenEsperado, 0, 6) . '...');
+    error_log('[webhook] VERIFICACIÓN GET — modo=' . $modo
+        . ' token_recibido=' . substr($token, 0, 6) . '...'
+        . ' token_esperado=' . substr((string)$tokenEsperado, 0, 6) . '...');
 
     if ($modo === 'subscribe' && $token !== '' && $token === $tokenEsperado) {
-        // Meta espera: HTTP 200 + hub.challenge como texto plano puro
         http_response_code(200);
         header('Content-Type: text/plain; charset=utf-8');
         echo $challenge;
         exit;
     }
 
-    // Token incorrecto o modo no reconocido
-    error_log('[webhook] VERIFICACIÓN FALLIDA — token no coincide o modo incorrecto');
+    error_log('[webhook] VERIFICACIÓN FALLIDA');
     http_response_code(403);
     exit;
 }
@@ -50,17 +52,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'GET') {
 // ============================================================================
 // RECEPCIÓN DE MENSAJES (POST)
 // ============================================================================
-
 $rawBody = file_get_contents('php://input');
-$data = json_decode($rawBody, true);
+$data    = json_decode($rawBody, true);
 
-// Log de diagnóstico — SOLO para POST, no para GET
 error_log('[webhook] ========== WEBHOOK RECIBIDO ==========');
 error_log('[webhook] Método: ' . ($_SERVER['REQUEST_METHOD'] ?? 'desconocido'));
 error_log('[webhook] Body: ' . substr($rawBody, 0, 500));
 
 if (!is_array($data) || empty($data['entry'])) {
-    // Petición no reconocida: responder 200 para que Meta no reintente
     http_response_code(200);
     echo 'OK';
     exit;
@@ -70,75 +69,107 @@ $pdo = obtenerConexion();
 
 foreach ($data['entry'] as $entry) {
     foreach (($entry['changes'] ?? []) as $change) {
-        $value    = $change['value'] ?? [];
-        $mensajes = $value['messages'] ?? [];
+        $value = $change['value'] ?? [];
 
-        foreach ($mensajes as $msg) {
+        // ----------------------------------------------------------------
+        // Status updates (sent, delivered, read) — solo loguear
+        // ----------------------------------------------------------------
+        if (!empty($value['statuses'])) {
+            foreach ($value['statuses'] as $status) {
+                error_log("[webhook] Status: " . ($status['status'] ?? '?')
+                    . " → " . ($status['recipient_id'] ?? '?'));
+            }
+        }
+
+        // ----------------------------------------------------------------
+        // Mensajes entrantes
+        // ----------------------------------------------------------------
+        foreach (($value['messages'] ?? []) as $msg) {
             $phone = $msg['from'] ?? null;
             $tipo  = $msg['type'] ?? null;
 
-            error_log("[webhook] Mensaje de $phone tipo=" . ($tipo ?? 'desconocido'));
-
             if (!$phone) continue;
 
-            // --------------------------------------------------------------
-            // Mensajes de texto normales
-            // --------------------------------------------------------------
+            error_log("[webhook] Mensaje de $phone tipo=" . ($tipo ?? 'desconocido'));
+
+            // ------------------------------------------------------------
+            // Mensajes de texto → rate limit + encolar
+            // ------------------------------------------------------------
+
             if ($tipo === 'text') {
-                $texto = $msg['text']['body'] ?? '';
-                try {
-                    procesarMensajeEntrante($phone, $texto, $pdo);
-                } catch (Throwable $e) {
-                    error_log("[webhook] Error procesando texto de $phone: " . $e->getMessage());
+                $texto     = $msg['text']['body'] ?? '';
+                $messageId = $msg['id'] ?? '';
+
+                if ($texto === '') continue;
+
+                if (!puedeUsarIA($phone, $pdo)) {
+                    error_log("[webhook] Rate limit alcanzado para $phone");
+                    enviarTextoWhatsApp($phone, "Estás enviando mensajes muy rápido. Por favor, espera un momento. 🙏");
+                    continue;
                 }
+
+                $jobId = encolarMensajeIA($pdo, $phone, [
+                    'tipo'       => 'text',
+                    'texto'      => $texto,
+                    'message_id' => $messageId,
+                ]);
+                error_log("[webhook] Encolado job ia_message #$jobId para $phone");
+
+                // ⭐ DISPARAR WORKER INMEDIATAMENTE
+                dispararWorker('ia');
                 continue;
             }
 
-            // --------------------------------------------------------------
+            // ------------------------------------------------------------
             // Mensajes interactivos
-            // --------------------------------------------------------------
+            // ------------------------------------------------------------
             if ($tipo === 'interactive') {
                 $interactivo = $msg['interactive'] ?? [];
                 $subtipo     = $interactivo['type'] ?? '';
 
-                // Flow completado (nfm_reply)
+                // Flow completado → ya fue encolado por flow_data_endpoint.php
                 if ($subtipo === 'nfm_reply') {
-                    $nfm           = $interactivo['nfm_reply'] ?? [];
-                    $respuestaJson = $nfm['response_json'] ?? '{}';
-                    error_log("[webhook] Flow completado por $phone: " . $respuestaJson);
+                    $respuestaJson = $interactivo['nfm_reply']['response_json'] ?? '{}';
+                    error_log("[webhook] Flow completado por $phone: " . substr($respuestaJson, 0, 200));
+                    continue;
                 }
 
-                // Botones (button_reply)
+                // Selección de slot (list_reply) → encolar con slot_id
+                if ($subtipo === 'list_reply') {
+                    $slotId    = $interactivo['list_reply']['id'] ?? '';
+                    $messageId = $msg['id'] ?? '';
+                    if ($slotId !== '') {
+                        $jobId = encolarMensajeIA($pdo, $phone, [
+                            'tipo'        => 'slot_selection',
+                            'slot_id'     => $slotId,
+                            'message_id'  => $messageId,
+                        ]);
+                        error_log("[webhook] Encolado slot_selection #$jobId para $phone (slot=$slotId)");
+                    }
+                    continue;
+                }
+
+                // Botón (button_reply) → encolar como texto
                 if ($subtipo === 'button_reply') {
                     $texto = $interactivo['button_reply']['title'] ?? '';
                     if ($texto !== '') {
-                        try {
-                            procesarMensajeEntrante($phone, $texto, $pdo);
-                        } catch (Throwable $e) {
-                            error_log("[webhook] Error button_reply de $phone: " . $e->getMessage());
-                        }
+                        $jobId = encolarMensajeIA($pdo, $phone, [
+                            'tipo'  => 'text',
+                            'texto' => $texto,
+                        ]);
+                        error_log("[webhook] Encolado button_reply #$jobId para $phone");
                     }
-                }
-
-                // Listas (list_reply) — SELECCIÓN DE SLOT
-                if ($subtipo === 'list_reply') {
-                    $slotId = $interactivo['list_reply']['id'] ?? '';
-                    error_log("[webhook] list_reply de $phone — slotId=$slotId");
-                    if ($slotId !== '') {
-                        try {
-                            procesarSeleccionSlot($phone, $slotId, $pdo);
-                        } catch (Throwable $e) {
-                            error_log("[webhook] Error list_reply de $phone: " . $e->getMessage());
-                        }
-                    }
+                    continue;
                 }
 
                 continue;
             }
 
-            // --------------------------------------------------------------
-            // Otros tipos
-            // --------------------------------------------------------------
+            // ------------------------------------------------------------
+            // Otros tipos (imagen, audio, video, sticker, etc.)
+            // ------------------------------------------------------------
+            error_log("[webhook] Tipo no soportado: $tipo");
+            // Responder rápido sin encolar (raro y no crítico)
             if (function_exists('enviarTextoWhatsApp')) {
                 enviarTextoWhatsApp($phone, "Por ahora solo puedo procesar mensajes de texto. Cuéntame cómo puedo ayudarte.");
             }
@@ -150,3 +181,4 @@ $pdo = null;
 http_response_code(200);
 echo 'OK';
 exit;
+

@@ -85,17 +85,17 @@ for ($i = 0; $i < $maxJobs; $i++) {
 
         $stmt = $pdo->query(
             "SELECT id, phone, payload, attempts, max_attempts
-             FROM jobs_queue
-             WHERE status = 'pending'
-             ORDER BY created_at ASC
-             LIMIT 1
-             FOR UPDATE"
+            FROM jobs_queue
+            WHERE status = 'pending' AND job_type = 'pagespeed_analysis'
+            ORDER BY created_at ASC
+            LIMIT 1
+            FOR UPDATE"
         );
         $job = $stmt->fetch(PDO::FETCH_ASSOC);
 
         if (!$job) {
             $pdo->commit();
-            error_log('[worker_pagespeed] No hay jobs pendientes en este ciclo.');
+            error_log('[worker_pagespeed] No hay jobs pagespeed pendientes en este ciclo.');
             break;
         }
 
@@ -103,8 +103,8 @@ for ($i = 0; $i < $maxJobs; $i++) {
 
         $pdo->prepare(
             "UPDATE jobs_queue
-             SET status = 'processing', started_at = NOW(), attempts = attempts + 1
-             WHERE id = ?"
+            SET status = 'processing', started_at = NOW(), attempts = attempts + 1
+            WHERE id = ?"
         )->execute([$job['id']]);
 
         $pdo->commit();
@@ -114,17 +114,15 @@ for ($i = 0; $i < $maxJobs; $i++) {
         break;
     }
 
-    // ========================================================================
-    // 2. Procesar el job fuera de la transacción
-    // ========================================================================
+    // 2. Procesar el job (con el payload)
     $payload = json_decode($job['payload'] ?? '{}', true) ?: [];
     $phone   = $job['phone'];
 
-    $exito        = false;
+    $exito = false;
     $errorMensaje = null;
 
     try {
-        $exito = procesarLeadFlowAsincrono($phone, $pdo);
+        $exito = procesarLeadFlowAsincrono($phone, $pdo, $payload);  // ⭐ pasar payload
         if (!$exito) {
             $errorMensaje = 'procesarLeadFlowAsincrono devolvió false';
         }
