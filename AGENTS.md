@@ -68,13 +68,21 @@ Cron runs both workers every minute in production.
 
 ## ⚠️ `database.sql` is NOT the current schema
 
-`database.sql` is the original 2026-09-16 bootstrap and is **far behind the live DB**. It defines only `clients`, `leads`, `conversation_states` — and its `leads.status` enum is `('new','qualifying','qualified','disqualified','scheduled')`, which **does not match** the values the code writes (`new`, `en_calificacion`, `calificado`, `requiere_humano`). It also has no `step` column.
+`database.sql` is the original 2026-09-16 bootstrap and is **wrong**. The authoritative structure is the production dump (`funciona.sql`): 10 tables — `clients`, `conversation_history`, `conversation_states`, `jobs_queue`, `leads`, `pagespeed_cache`, `products`, `quotes`, `quote_rules`, `users`.
 
-Missing entirely: `jobs_queue`, `conversation_history`, `pagespeed_cache`, `products`, `quotes`, `quote_rules`, and the `leads` columns added by `migration_renovacion_web.sql` (`url_sitio`, `pagespeed_score`, `clasificacion`, `cita_fecha`, `cita_hora`, `google_event_id`, `servicio_interes`, `tiene_sitio_web`, `antiguedad_sitio`).
+`database.sql` defines only `clients`, `leads`, `conversation_states` and its `leads.status` enum is `('new','qualifying','qualified','disqualified','scheduled')`. None of those values exist in the real enum.
 
-**Do not bootstrap a fresh environment from `database.sql` + `migration_renovacion_web.sql`.** Dump the live DB instead. If you add a schema change, add a new `.sql` migration file — and expect the gap to persist.
+**Do not bootstrap a fresh environment from `database.sql`.** Dump the live DB (or `funciona.sql`) instead. If you add a schema change, add a new `.sql` migration file.
 
-Actual DB name is `cualify` (not `db_cualify`). From a shell, PDO fails with `Access denied ... (unix_socket)` because the DB user authenticates via socket as `apache`; query through the web server or `sudo -u apache` instead.
+### The enums that actually bite
+
+`leads.status` is `('nuevo','en_calificacion','calificado','descartado')`. Writing `new` or `requiere_humano` throws at the enum — those were values the old bootstrap used, and both were removed from the code. The human-handoff path (`lead_qualifier.php`, "COMANDO ASESOR") now writes `descartado`, because the enum has no dedicated state for it.
+
+`leads` also has **no** `client_id` or `meta_lead_id` column. `users` uses `password` and `last_login` (not `password_hash` / `last_login_at`), has **no** `is_active`, and its `role` enum is `('admin','viewer')` — English, not `visor`.
+
+Before writing SQL, check the column actually exists in `funciona.sql`. `SELECT *` hides mistakes that a named column list would have caught.
+
+From a shell, PDO may fail with `Access denied ... (unix_socket)` because the DB user authenticates via socket as `apache`. Connect over TCP (`127.0.0.1`) instead, which is what `cualify-dashboard/.env` does.
 
 ## Gotchas
 

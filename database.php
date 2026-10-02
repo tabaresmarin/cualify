@@ -44,6 +44,11 @@ function obtenerClienteActual() {
     return $cliente ? (int)$cliente['id'] : null;
 }
 
+// Sin llamadas en el codigo actual (el flujo real usa crearLeadEnCalificacion
+// en lead_qualifier.php y el ON DUPLICATE KEY de flow_data_endpoint.php). Se
+// deja por compatibilidad, pero ya alineado con el schema: sin client_id ni
+// meta_lead_id, y con status dentro del enum. El $metaLeadId se conserva en la
+// firma aunque ya no se use.
 function buscarOCrearLead($phone, $metaLeadId = null) {
     $pdo  = obtenerConexion();
     $stmt = $pdo->prepare('SELECT * FROM leads WHERE phone = ? LIMIT 1');
@@ -53,15 +58,16 @@ function buscarOCrearLead($phone, $metaLeadId = null) {
         return $lead;
     }
 
-    $clientId = obtenerClienteActual();
-    $stmt = $pdo->prepare('INSERT INTO leads (client_id, meta_lead_id, phone, status) VALUES (?, ?, ?, "new")');
-    $stmt->execute([$clientId, $metaLeadId, $phone]);
+    // El enum de leads.status es ('nuevo','en_calificacion','calificado',
+    // 'descartado'): 'new' esta fuera del enum y el INSERT fallaria. Ademas
+    // `leads` no tiene columnas client_id ni meta_lead_id.
+    $stmt = $pdo->prepare('INSERT INTO leads (phone, status) VALUES (?, "nuevo")');
+    $stmt->execute([$phone]);
 
     return [
-        'id'        => (int)$pdo->lastInsertId(),
-        'client_id' => $clientId,
-        'phone'     => $phone,
-        'status'    => 'new',
+        'id'     => (int)$pdo->lastInsertId(),
+        'phone'  => $phone,
+        'status' => 'nuevo',
     ];
 }
 

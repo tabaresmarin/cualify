@@ -282,7 +282,12 @@ function procesarMensajeEntranteConIA($phone, $texto, PDO $pdo): ?string {
         || strpos($textoLower, 'persona') !== false
         || strpos($textoLower, 'agente') !== false
     ) {
-        actualizarLead($pdo, $phone, ['status' => 'requiere_humano']);
+        // El enum de leads.status es ('nuevo','en_calificacion','calificado',
+        // 'descartado'): no tiene un estado propio para el handoff a humano, asi
+        // que se registra como 'descartado' (lead que el bot no puede resolver y
+        // pasa a un asesor). No escribir 'requiere_humano' ni 'new': son valores
+        // fuera del enum y el UPDATE falla.
+        actualizarLead($pdo, $phone, ['status' => 'descartado']);
         notificarEquipoVentas($phone, $pdo);
         return "Entendido 🙌. Un asesor de EISO se pondrá en contacto contigo muy pronto.\n\n"
              . "Mientras tanto, ¿puedo ayudarte con algo más?";
