@@ -31,7 +31,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'GET') {
     $token     = $_GET['hub_verify_token'] ?? '';
     $challenge = $_GET['hub_challenge'] ?? '';
 
-    $tokenEsperado = valorEntorno('WHATSAPP_VERIFY_TOKEN');
+    // WA_VERIFY_TOKEN es obligatoria en config.php, asi que la constante ya
+    // esta definida. Se lee como constante (igual que WA_PHONE_NUMBER_ID y
+    // WA_ACCESS_TOKEN en whatsapp_api.php) y no con valorEntorno().
+    $tokenEsperado = WA_VERIFY_TOKEN;
 
     error_log('[webhook] VERIFICACIÓN GET — modo=' . $modo
         . ' token_recibido=' . substr($token, 0, 6) . '...'
