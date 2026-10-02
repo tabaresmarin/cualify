@@ -1,4 +1,13 @@
+# Archivos de entorno: .env en cualquier carpeta del repo (sin barra inicial el
+# patron ya aplica a todos los niveles), mas las variantes .env.local,
+# .env.production, .env.staging, etc.
 .env
+.env.*
+
+# ...excepto las plantillas, que si se versionan.
+!.env.example
+!.env.sample
+
 vendor/
 private.pem
 public.pem
