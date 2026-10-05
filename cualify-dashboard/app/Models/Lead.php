@@ -91,14 +91,39 @@ final class Lead extends Model
     }
 
     /**
-     * Telefonos con actividad conversacional, para el listado lateral.
+     * Telefonos con actividad conversacional, ordenados por el ultimo mensaje.
      *
+     * @param int    $offset  Saltar ya N hilos (paginacion). El ORDER BY es
+     *                        estable, asi que el corte no cambia entre llamadas.
+     * @param string $busqueda Filtra por telefono o por nombre del lead (LIKE).
      * @return array<int, array<string, mixed>>
      */
-    public function telefonosConversando(int $limite = 100): array
+    public function telefonosConversando(int $limite = 100, string $busqueda = '', int $offset = 0): array
     {
+        $limite = max(1, min($limite, 200));
+        $offset = max(0, $offset);
+        $busqueda = trim($busqueda);
+
+        if ($busqueda !== '') {
+            return $this->db->fetchAllSiExiste(
+                "SELECT ch.phone,
+                        MAX(ch.created_at) AS ultimo_mensaje,
+                        COUNT(*)          AS mensajes,
+                        l.name,
+                        l.status,
+                        l.pagespeed_score
+                 FROM conversation_history ch
+                 LEFT JOIN leads l ON l.phone = ch.phone
+                 WHERE ch.phone LIKE ? OR l.name LIKE ?
+                 GROUP BY ch.phone, l.name, l.status, l.pagespeed_score
+                 ORDER BY ultimo_mensaje DESC, ch.phone ASC
+                 LIMIT {$limite} OFFSET {$offset}",
+                ['%' . $busqueda . '%', '%' . $busqueda . '%']
+            );
+        }
+
         return $this->db->fetchAllSiExiste(
-            'SELECT ch.phone,
+            "SELECT ch.phone,
                     MAX(ch.created_at) AS ultimo_mensaje,
                     COUNT(*)          AS mensajes,
                     l.name,
@@ -107,9 +132,68 @@ final class Lead extends Model
              FROM conversation_history ch
              LEFT JOIN leads l ON l.phone = ch.phone
              GROUP BY ch.phone, l.name, l.status, l.pagespeed_score
-             ORDER BY ultimo_mensaje DESC
-             LIMIT ' . (int) $limite
+             ORDER BY ultimo_mensaje DESC, ch.phone ASC
+             LIMIT {$limite} OFFSET {$offset}"
         );
+    }
+
+    /**
+     * Hilos completos de varios telefonos en UNA sola consulta.
+     *
+     * La vista muestra todas las conversaciones en la misma pagina, asi que
+     * pedir `conversacion()` en bucle por telefono seria un N+1: por cada
+     * pantalla se irian hasta HILOS_POR_PAGINA consultas a
+     * conversation_history.
+     *
+     * Si un hilo supera $limitePorHilo se conservan los mensajes MAS RECIENTES
+     * y se descartan los antiguos. El total real del hilo se devuelve aparte
+     * para poder avisar "mostrando los ultimos N de M".
+     *
+     * @param  array<int, string> $telefonos
+     * @return array<string, array{mensajes: array<int, array<string, mixed>>, total: int}>
+     */
+    public function conversacionesDe(array $telefonos, int $limitePorHilo = 200): array
+    {
+        $telefonos = array_values(array_unique(array_filter(array_map('strval', $telefonos), static fn ($t): bool => $t !== '')));
+
+        if ($telefonos === []) {
+            return [];
+        }
+
+        $marcadores = implode(',', array_fill(0, count($telefonos), '?'));
+
+        $filas = $this->db->fetchAllSiExiste(
+            "SELECT id, phone, role, content, created_at
+             FROM conversation_history
+             WHERE phone IN ({$marcadores})
+             ORDER BY id ASC",
+            $telefonos
+        );
+
+        $porTelefono = [];
+        foreach ($telefonos as $telefono) {
+            $porTelefono[$telefono] = [];
+        }
+
+        foreach ($filas as $fila) {
+            $telefono = (string) $fila['phone'];
+
+            if (!isset($porTelefono[$telefono])) {
+                continue;
+            }
+
+            unset($fila['id']);
+            $porTelefono[$telefono][] = $fila;
+        }
+
+        foreach ($porTelefono as $telefono => $mensajes) {
+            $porTelefono[$telefono] = [
+                'mensajes' => array_slice($mensajes, -max(1, $limitePorHilo)),
+                'total'    => count($mensajes),
+            ];
+        }
+
+        return $porTelefono;
     }
 
     /** @return array<int, string> */

@@ -1,9 +1,15 @@
 <?php
 /**
+ * Todas las conversaciones del bot en una sola pagina, un hilo por telefono y
+ * del mas antiguo al mas reciente dentro de cada hilo.
+ *
  * @var array<int, array<string, mixed>> $telefonos
- * @var string $telefono
- * @var array<int, array<string, mixed>> $conversacion
- * @var array<string, mixed>|null $lead
+ * @var array<string, array{mensajes: array<int, array<string, mixed>>, total: int}> $hilos
+ * @var string $busqueda
+ * @var int $pagina
+ * @var int $totalPaginas
+ * @var int $totalHilos
+ * @var string $foco
  * @var string $baseUrl
  * @var callable $e
  */
@@ -16,85 +22,116 @@ $etiquetasStatus = MetricsService::etiquetasStatus();
 <div class="cualify-page-head">
     <div>
         <h1>Conversaciones</h1>
-        <p class="cualify-muted">Historial del bot, de mas antiguo a mas reciente</p>
+        <p class="cualify-muted">
+            <?= $e($totalHilos) ?> conversacion(es) con historial, del hilo mas antiguo al mas reciente
+        </p>
     </div>
 </div>
 
-<div class="row g-3">
-    <div class="col-12 col-lg-4 col-xl-3">
-        <div class="cualify-card p-0 cualify-scroll">
-            <div class="cualify-card-head px-3 py-2">
-                <h2 class="mb-0 h6">Telefonos</h2>
+<form method="get" action="<?= $e($baseUrl) ?>/conversations" class="row g-2 align-items-end mb-3">
+    <div class="col-12 col-md-5">
+        <label class="form-label small" for="q">Buscar</label>
+        <input type="search" class="form-control" id="q" name="q"
+               value="<?= $e($busqueda) ?>"
+               placeholder="Telefono o nombre del lead">
+    </div>
+    <div class="col-12 col-md-auto">
+        <button type="submit" class="btn btn-outline-secondary">Buscar</button>
+        <?php if ($busqueda !== ''): ?>
+            <a href="<?= $e($baseUrl) ?>/conversations" class="btn btn-outline-secondary">Limpiar</a>
+        <?php endif; ?>
+    </div>
+</form>
+
+<?php if (empty($telefonos)): ?>
+    <div class="cualify-card">
+        <p class="cualify-muted mb-0">
+            <?= $busqueda !== '' ? 'Ningun hilo coincide con la busqueda.' : 'Sin conversaciones registradas.' ?>
+        </p>
+    </div>
+<?php else: ?>
+
+    <?php foreach ($telefonos as $fila): ?>
+        <?php
+        $telefono = (string) $fila['phone'];
+        $hilo     = $hilos[$telefono] ?? ['mensajes' => [], 'total' => 0];
+        $mensajes = $hilo['mensajes'];
+        $total    = (int) $hilo['total'];
+        $recortado = $total > count($mensajes);
+        ?>
+        <section class="cualify-card mb-3 cualify-hilo<?= $telefono === $foco ? ' cualify-hilo-foco' : '' ?>"
+                 id="tel-<?= $e($telefono) ?>">
+            <div class="cualify-card-head">
+                <div>
+                    <h2 class="mb-1">
+                        <?= $e($fila['name'] ?: $telefono) ?>
+                        <span class="cualify-muted small fw-normal"><?= $e($telefono) ?></span>
+                    </h2>
+                    <span class="cualify-muted small">
+                        <?= $e($total) ?> mensaje(s)
+                        &middot; ultimo <?= $e(substr((string) $fila['ultimo_mensaje'], 5, 11)) ?>
+                    </span>
+                </div>
+                <div class="d-flex gap-2 flex-wrap">
+                    <?php if (!empty($fila['status'])): ?>
+                        <span class="cualify-badge cualify-badge-<?= $e($fila['status']) ?>">
+                            <?= $e($etiquetasStatus[$fila['status']] ?? $fila['status']) ?>
+                        </span>
+                    <?php endif; ?>
+                    <?php if (!empty($fila['url_sitio'])): ?>
+                        <a class="btn btn-sm btn-outline-secondary"
+                           href="<?= $e($fila['url_sitio']) ?>" target="_blank" rel="noopener noreferrer nofollow">
+                            Ver sitio
+                        </a>
+                    <?php endif; ?>
+                    <a class="btn btn-sm btn-outline-secondary"
+                       href="<?= $e($baseUrl) ?>/leads?q=<?= $e(urlencode($telefono)) ?>">Ver lead</a>
+                </div>
             </div>
 
-            <?php if (empty($telefonos)): ?>
-                <p class="cualify-muted small p-3 mb-0">Sin conversaciones registradas.</p>
+            <?php if ($recortado): ?>
+                <p class="cualify-muted small mb-2">
+                    Mostrando los <?= $e(count($mensajes)) ?> mensajes mas recientes de <?= $e($total) ?>.
+                </p>
+            <?php endif; ?>
+
+            <?php if (empty($mensajes)): ?>
+                <p class="cualify-muted mb-0">Este telefono no tiene historial.</p>
             <?php else: ?>
-                <ul class="cualify-conv-list">
-                    <?php foreach ($telefonos as $fila): ?>
-                        <?php $activo = (string) $fila['phone'] === $telefono; ?>
-                        <li>
-                            <a href="<?= $e($baseUrl) ?>/conversations?tel=<?= $e(urlencode((string) $fila['phone'])) ?>"
-                               class="cualify-conv-item<?= $activo ? ' active' : '' ?>">
-                                <div class="cualify-conv-top">
-                                    <strong><?= $e($fila['name'] ?: $fila['phone']) ?></strong>
-                                    <span class="cualify-muted small"><?= $e((int) $fila['mensajes']) ?> msg</span>
-                                </div>
-                                <div class="cualify-conv-bottom">
-                                    <span class="cualify-muted small"><?= $e($fila['phone']) ?></span>
-                                    <span class="cualify-muted small"><?= $e(substr((string) $fila['ultimo_mensaje'], 5, 11)) ?></span>
-                                </div>
-                            </a>
+                <ul class="cualify-thread cualify-thread-full">
+                    <?php foreach ($mensajes as $mensaje): ?>
+                        <li class="cualify-msg cualify-msg-<?= $e($mensaje['role']) ?>">
+                            <span class="cualify-msg-role"><?= $e($mensaje['role']) ?></span>
+                            <span class="cualify-msg-body"><?= nl2br($e($mensaje['content'])) ?></span>
+                            <span class="cualify-msg-time"><?= $e(substr((string) $mensaje['created_at'], 5, 11)) ?></span>
                         </li>
                     <?php endforeach; ?>
                 </ul>
             <?php endif; ?>
-        </div>
-    </div>
+        </section>
+    <?php endforeach; ?>
 
-    <div class="col-12 col-lg-8 col-xl-9">
-        <?php if ($telefono === ''): ?>
-            <div class="cualify-card">
-                <p class="cualify-muted mb-0">Selecciona un telefono para ver su conversacion.</p>
-            </div>
-        <?php else: ?>
-            <div class="cualify-card mb-3">
-                <div class="cualify-card-head">
-                    <div>
-                        <h2 class="mb-1"><?= $e($lead['name'] ?: $telefono) ?></h2>
-                        <span class="cualify-muted small"><?= $e($telefono) ?></span>
-                    </div>
-                    <div class="d-flex gap-2 flex-wrap">
-                        <?php if ($lead && !empty($lead['status'])): ?>
-                            <span class="cualify-badge cualify-badge-<?= $e($lead['status']) ?>">
-                                <?= $e($etiquetasStatus[$lead['status']] ?? $lead['status']) ?>
-                            </span>
-                        <?php endif; ?>
-                        <?php if ($lead && $lead['url_sitio']): ?>
-                            <a class="btn btn-sm btn-outline-secondary"
-                               href="<?= $e($lead['url_sitio']) ?>" target="_blank" rel="noopener noreferrer nofollow">
-                                Ver sitio
-                            </a>
-                        <?php endif; ?>
-                    </div>
-                </div>
-            </div>
+    <?php if ($totalPaginas > 1): ?>
+        <nav class="cualify-paginacion" aria-label="Paginas de conversaciones">
+            <?php
+            $query = static function (int $p) use ($busqueda, $baseUrl): string {
+                $params = ['pagina' => $p];
+                if ($busqueda !== '') {
+                    $params['q'] = $busqueda;
+                }
 
-            <div class="cualify-card">
-                <?php if (empty($conversacion)): ?>
-                    <p class="cualify-muted mb-0">Este telefono no tiene historial.</p>
-                <?php else: ?>
-                    <ul class="cualify-thread cualify-thread-full">
-                        <?php foreach ($conversacion as $mensaje): ?>
-                            <li class="cualify-msg cualify-msg-<?= $e($mensaje['role']) ?>">
-                                <span class="cualify-msg-role"><?= $e($mensaje['role']) ?></span>
-                                <span class="cualify-msg-body"><?= nl2br($e($mensaje['content'])) ?></span>
-                                <span class="cualify-msg-time"><?= $e(substr((string) $mensaje['created_at'], 5, 11)) ?></span>
-                            </li>
-                        <?php endforeach; ?>
-                    </ul>
-                <?php endif; ?>
-            </div>
-        <?php endif; ?>
-    </div>
-</div>
+                return $baseUrl . '/conversations?' . http_build_query($params);
+            };
+            ?>
+            <a class="btn btn-sm btn-outline-secondary<?= $pagina <= 1 ? ' disabled' : '' ?>"
+               href="<?= $e($query(max(1, $pagina - 1))) ?>">Anterior</a>
+            <span class="cualify-muted small">Pagina <?= $e($pagina) ?> de <?= $e($totalPaginas) ?></span>
+            <a class="btn btn-sm btn-outline-secondary<?= $pagina >= $totalPaginas ? ' disabled' : '' ?>"
+               href="<?= $e($query(min($totalPaginas, $pagina + 1))) ?>">Siguiente</a>
+        </nav>
+    <?php endif; ?>
+
+    <script>
+        window.CUALIFY_FOCO = <?= json_encode($foco) ?>;
+    </script>
+<?php endif; ?>

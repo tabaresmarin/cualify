@@ -192,4 +192,14 @@
     }
 
     activarTabla('tablaLeads');
+
+    // /conversations?tel=... deja el hilo a la vista. La pagina ya trae todos
+    // los hilos, asi que esto solo desplaza hasta el que se pidio.
+    var foco = window.CUALIFY_FOCO || '';
+    if (foco) {
+        var destino = document.getElementById('tel-' + foco);
+        if (destino) {
+            destino.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        }
+    }
 })();

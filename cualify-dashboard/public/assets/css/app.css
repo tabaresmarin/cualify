@@ -605,3 +605,28 @@ body.cualify-auth-body {
         max-width: 100%;
     }
 }
+
+/* --- Conversaciones: todos los hilos en la misma pagina ---------------- */
+
+/* Un hilo completo puede ser largo: con max-height + scroll interno el
+   mensaje final queda fuera de vista al abrir la pagina. Aqui la caja crece
+   hasta tope razonable y a partir de ahi scrollea sola. */
+.cualify-hilo .cualify-thread-full {
+    max-height: 420px;
+}
+
+/* Ancla para /conversations?tel=...: deja aire arriba al saltar al hilo. */
+.cualify-hilo {
+    scroll-margin-top: 16px;
+}
+
+.cualify-hilo-foco {
+    border-color: var(--cualify-muted);
+}
+
+.cualify-paginacion {
+    display: flex;
+    gap: 12px;
+    align-items: center;
+    justify-content: center;
+}
