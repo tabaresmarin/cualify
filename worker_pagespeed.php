@@ -13,8 +13,9 @@
  */
 
 // ============================================================================
-// SEGURIDAD: Detectar si es CLI o HTTP (compatible con LiteSpeed)
+// SEGURIDAD: CLI, cron_runner o token válido
 // ============================================================================
+require_once __DIR__ . '/config.php';
 
 $esCli = (
     php_sapi_name() === 'cli'
@@ -23,11 +24,14 @@ $esCli = (
     || !isset($_SERVER['REQUEST_METHOD'])
 );
 
-$tokenValido = isset($_GET['token'])
-    && function_exists('valorEntorno')
-    && $_GET['token'] === valorEntorno('WORKER_SECRET_TOKEN');
+$tokenRecibido = $_GET['token'] ?? '';
+$tokenValido = !empty($tokenRecibido) && (
+    hash_equals((string)valorEntorno('WORKER_TRIGGER_TOKEN'), $tokenRecibido) ||
+    hash_equals((string)valorEntorno('WORKER_SECRET_TOKEN'), $tokenRecibido)
+);
+$esRunnerValido = defined('CRON_RUNNER_ACTIVE') || $tokenValido;
 
-if (!$esCli && !$tokenValido) {
+if (!$esCli && !$esRunnerValido) {
     http_response_code(403);
     exit('Este script solo puede ejecutarse desde CLI o con token válido.');
 }

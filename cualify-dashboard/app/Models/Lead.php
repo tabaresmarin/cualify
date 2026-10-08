@@ -110,12 +110,13 @@ final class Lead extends Model
                         MAX(ch.created_at) AS ultimo_mensaje,
                         COUNT(*)          AS mensajes,
                         l.name,
+                        l.url_sitio,
                         l.status,
                         l.pagespeed_score
                  FROM conversation_history ch
                  LEFT JOIN leads l ON l.phone = ch.phone
                  WHERE ch.phone LIKE ? OR l.name LIKE ?
-                 GROUP BY ch.phone, l.name, l.status, l.pagespeed_score
+                 GROUP BY ch.phone, l.name, l.url_sitio, l.status, l.pagespeed_score
                  ORDER BY ultimo_mensaje DESC, ch.phone ASC
                  LIMIT {$limite} OFFSET {$offset}",
                 ['%' . $busqueda . '%', '%' . $busqueda . '%']
@@ -127,13 +128,39 @@ final class Lead extends Model
                     MAX(ch.created_at) AS ultimo_mensaje,
                     COUNT(*)          AS mensajes,
                     l.name,
+                    l.url_sitio,
                     l.status,
                     l.pagespeed_score
              FROM conversation_history ch
              LEFT JOIN leads l ON l.phone = ch.phone
-             GROUP BY ch.phone, l.name, l.status, l.pagespeed_score
+             GROUP BY ch.phone, l.name, l.url_sitio, l.status, l.pagespeed_score
              ORDER BY ultimo_mensaje DESC, ch.phone ASC
              LIMIT {$limite} OFFSET {$offset}"
+        );
+    }
+
+    /**
+     * Devuelve la cantidad total de hilos (telefonos distintos) con historial.
+     */
+    public function conteoTelefonosConversando(string $busqueda = ''): int
+    {
+        $busqueda = trim($busqueda);
+
+        if ($busqueda !== '') {
+            return (int) $this->db->fetchValueSiExiste(
+                "SELECT COUNT(DISTINCT ch.phone)
+                 FROM conversation_history ch
+                 LEFT JOIN leads l ON l.phone = ch.phone
+                 WHERE ch.phone LIKE ? OR l.name LIKE ?",
+                ['%' . $busqueda . '%', '%' . $busqueda . '%'],
+                0
+            );
+        }
+
+        return (int) $this->db->fetchValueSiExiste(
+            "SELECT COUNT(DISTINCT ch.phone) FROM conversation_history ch",
+            [],
+            0
         );
     }
 

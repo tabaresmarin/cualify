@@ -103,6 +103,7 @@ final class App
         $this->bind(Session::class, fn () => new Session($this->config['session']));
         $this->bind(\App\Models\User::class, fn ($app) => new \App\Models\User($app->make(Database::class)));
         $this->bind(\App\Models\Lead::class, fn ($app) => new \App\Models\Lead($app->make(Database::class)));
+        $this->bind(\App\Models\Client::class, fn ($app) => new \App\Models\Client($app->make(Database::class)));
         $this->bind(Auth::class, fn ($app) => new Auth($app->make(\App\Models\User::class), $app->make(Session::class)));
         $this->bind(\App\Services\MetricsService::class, fn ($app) => new \App\Services\MetricsService($app->make(Database::class)));
         $this->bind(Router::class, fn () => new Router());

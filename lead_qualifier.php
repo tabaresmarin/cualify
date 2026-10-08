@@ -274,6 +274,24 @@ function procesarMensajeEntranteConIA($phone, $texto, PDO $pdo): ?string {
     error_log("[procesarMensajeEntranteConIA] phone=$phone texto='$texto'");
 
     // ========================================================================
+    // FILTRO RÁPIDO: BÚSQUEDA DE EMPLEO / VACANTES (Descarte automático)
+    // ========================================================================
+    $patronesEmpleo = [
+        'empleo', 'trabajo', 'vacante', 'vacantes', 'hoja de vida', 'hojas de vida',
+        'enviar cv', 'adjunto cv', 'practicas', 'prácticas', 'postularme', 'bolsa de trabajo'
+    ];
+    foreach ($patronesEmpleo as $patron) {
+        if (strpos($textoLower, $patron) !== false) {
+            actualizarLead($pdo, $phone, [
+                'status'        => 'descartado',
+                'clasificacion' => 'Descartado: Búsqueda de empleo'
+            ]);
+            return "Gracias por tu interés en EISO. En este momento no contamos con vacantes ni procesos de selección abiertos.\n\n"
+                 . "¡Te deseamos mucho éxito en tu búsqueda laboral!";
+        }
+    }
+
+    // ========================================================================
     // COMANDO ASESOR (handoff a humano)
     // ========================================================================
     if (

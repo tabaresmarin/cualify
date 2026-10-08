@@ -44,6 +44,11 @@ final class Request
         return $this->body[$clave] ?? $this->query[$clave] ?? $porDefecto;
     }
 
+    public function body(string $clave, mixed $porDefecto = null): mixed
+    {
+        return $this->body[$clave] ?? $porDefecto;
+    }
+
     public function query(string $clave, mixed $porDefecto = null): mixed
     {
         return $this->query[$clave] ?? $porDefecto;

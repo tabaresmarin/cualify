@@ -22,8 +22,11 @@ Meta POST flow_data_endpoint.php (encrypted Flow) ──► persists lead ──
 ```
 
 - `webhook.php` — enqueues and returns `200 OK` immediately. Text, `button_reply`, `list_reply` (slot) become `ia_message` jobs. `nfm_reply` (Flow completion) is **ignored** — the Flow's own data endpoint already enqueued the work. Only `text` jobs call `dispararWorker()`; slot/button jobs and the Flow's pagespeed job wait for the cron tick (up to ~60 s).
+- `lead_inbound.php` — Webhook "Speed-to-Lead" para ingesta desde Meta Lead Ads / formularios web. Inscribe lead en < 30s, envía plantilla opcional y dispara worker de IA.
 - `worker_ia.php` — CLI-only. Processes one `ia_message` job: shows the typing indicator, resolves the reply **as text**, sends it, marks the job `done` / `pending` (retry) / `failed` (attempts ≥ `max_attempts`).
 - `worker_pagespeed.php` — CLI-only. Processes one `pagespeed_analysis` job via `procesarLeadFlowAsincrono()`.
+- `worker_reminders.php` — CLI-only. Envía recordatorios de citas por WhatsApp (24h y 1h antes) para reducir no-shows.
+- `worker_followup.php` — CLI-only. Realiza re-engagement automático a leads fríos que dejaron de responder (a las 2h y 24h).
 - `trigger_worker.php` + `dispararWorker()` — HTTP shim that `nice`s a worker into the background so text replies feel instant without waiting on the cron tick.
 - `flow_data_endpoint.php` — WhatsApp Flow data endpoint. RSA-OAEP/AES-128-GCM decrypt (phpseclib for the RSA unwrap, `openssl_decrypt` fast path for AES), saves lead data, enqueues, replies `SUCCESS` **before** any slow work. `flow_token` **must** be the recipient phone number — it's the only identifier tying a Flow session to a lead.
 
@@ -32,7 +35,7 @@ Meta POST flow_data_endpoint.php (encrypted Flow) ──► persists lead ──
 | File | Role |
 |---|---|
 | `lead_qualifier.php` | Conversation state machine + job enqueuers + `dispararWorker()` + rate limit + human handoff. Requires the API modules (`ia_engine.php` is `require_once`'d lazily inside functions). |
-| `ia_engine.php` | Gemini function-calling loop (max 5 rounds) + tool executors (`buscar_producto`, `cotizar_producto`, `agendar_cita`, `enviar_url`). `respuesta_directa` short-circuits the loop and skips a second Gemini call. |
+| `ia_engine.php` | Gemini function-calling loop (max 5 rounds) + tool executors (`buscar_producto`, `cotizar_producto`, `agendar_cita`, `enviar_url`, `descartar_lead`). `respuesta_directa` short-circuits the loop and skips a second Gemini call. |
 | `gemini_api.php` | `GeminiClient`: retries w/ exponential backoff + jitter, falls back `GEMINI_MODEL` → `GEMINI_FALLBACK_MODEL` on transient errors only (429/5xx). |
 | `pagespeed_api.php` | PSI v5 (mobile) + 24 h `pagespeed_cache` + score→message classification. |
 | `crux_api.php` | Instant CrUX (real-user) score derived from LCP/INP/CLS thresholds — the "fast answer" while PSI runs. |
@@ -62,8 +65,14 @@ composer install                     # root: vendor/ (phpseclib; tcpdf is declar
 
 cd cualify-dashboard && composer install   # PSR-4 autoloader only, no third-party deps
 
+# Script ejecutor para cPanel/Jailshell (evita errores de parsing de comillas)
+/bin/bash run_worker.sh worker_ia.php
+/bin/bash run_worker.sh worker_pagespeed.php
+
 php worker_ia.php                    # drain one ia_message job (CLI only)
 php worker_pagespeed.php             # drain one pagespeed_analysis job (CLI only)
+php worker_reminders.php             # send appointment reminders 24h & 1h before (CLI only)
+php worker_followup.php              # send 2h & 24h re-engagement to cold leads (CLI only)
 php cleanup_cache.php                # delete expired pagespeed_cache rows (CLI only)
 
 php test_send.php 573001234567       # or ?to=NUMERO — sends the Flow template

@@ -139,7 +139,13 @@ function construirSystemPrompt(PDO $pdo): array {
             . "9. Si el usuario pide hablar con un humano, indícale que escriba ASESOR.\n"
             . "10. Mantén un tono cercano y consultivo. Haz preguntas abiertas para entender las necesidades "
             . "    del cliente (objetivos del sitio, presupuesto aproximado, plazo de entrega) antes de ofrecer "
-            . "    una cotización formal.";
+            . "    una cotización formal.\n"
+            . "11. 🔴 FILTRO DE DESCARTE RÁPIDO:\n"
+            . "    - Si el usuario busca empleo, trabajo, vacantes, enviar hoja de vida/CV o realizar prácticas: "
+            . "      llama INMEDIATAMENTE a 'descartar_lead' con motivo='busqueda_empleo' y responde amablemente que no hay vacantes abiertas.\n"
+            . "    - Si el usuario es un proveedor vendiendo spam o solicita un servicio ajeno a EISO: "
+            . "      llama a 'descartar_lead' con motivo='fuera_de_servicio' o 'spam_proveedor'.\n"
+            . "    - Al descartar un lead, NUNCA ofrezcas agendar cita ni pasar a un asesor.";
 
     return ['parts' => [['text' => $prompt]]];
 }
@@ -208,6 +214,24 @@ function definirHerramientas(): array {
                             'url' => ['type' => 'string', 'description' => 'URL del sitio web a analizar'],
                         ],
                         'required' => ['url'],
+                    ],
+                ],
+                [
+                    'name'        => 'descartar_lead',
+                    'description' => 'Marca a un lead como descartado/no calificado si busca empleo, trabajo, prácticas, envía spam de proveedores, o solicita un servicio fuera de alcance.',
+                    'parameters'  => [
+                        'type'       => 'object',
+                        'properties' => [
+                            'motivo' => [
+                                'type'        => 'string',
+                                'description' => 'Motivo del descarte: "busqueda_empleo", "spam_proveedor", "sin_presupuesto", "fuera_de_servicio"',
+                            ],
+                            'mensaje_cierre' => [
+                                'type'        => 'string',
+                                'description' => 'Mensaje educado y amable de despedida/cierre para el usuario.',
+                            ],
+                        ],
+                        'required' => ['motivo', 'mensaje_cierre'],
                     ],
                 ],
             ],
@@ -279,6 +303,7 @@ function procesarFunctionCalls(
                     'cotizar_producto' => ejecutarCotizarProducto($args, $phone, $pdo),
                     'agendar_cita'     => ejecutarAgendarCita($args, $phone, $pdo),
                     'enviar_url'       => ejecutarEnviarUrl($args, $phone, $pdo),
+                    'descartar_lead'   => ejecutarDescartarLead($args, $phone, $pdo),
                     default            => ['status' => 'error', 'mensaje' => "Función desconocida: $nombre"],
                 };
             } catch (Throwable $e) {
@@ -356,6 +381,30 @@ function procesarFunctionCalls(
 // EJECUTORES DE HERRAMIENTAS
 // ============================================================================
 
+/**
+ * Marca a un lead como descartado/no calificado en la base de datos.
+ */
+function ejecutarDescartarLead(array $args, string $phone, PDO $pdo): array {
+    $motivo        = $args['motivo'] ?? 'no_calificado';
+    $mensajeCierre = $args['mensaje_cierre'] ?? 'Gracias por contactar a EISO. Por el momento no podemos atender tu solicitud.';
+
+    try {
+        actualizarLead($pdo, $phone, [
+            'status'        => 'descartado',
+            'clasificacion' => 'Descartado: ' . $motivo,
+        ]);
+        error_log("[ejecutarDescartarLead] Lead $phone marcado como descartado ($motivo)");
+    } catch (Throwable $e) {
+        error_log('[ejecutarDescartarLead] Error actualizando lead: ' . $e->getMessage());
+    }
+
+    return [
+        'status'            => 'ok',
+        'motivo'            => $motivo,
+        'respuesta_directa' => $mensajeCierre,
+    ];
+}
+
 function ejecutarAgendarCita(array $args, string $phone, PDO $pdo): array {
     // Delegamos al flujo existente de slots (que ya tienes implementado)
     // Por ahora solo devolvemos un mensaje para que el usuario escriba AGENDAR
@@ -372,7 +421,7 @@ function ejecutarCotizarProducto(array $args, string $phone, PDO $pdo): array {
     require_once __DIR__ . '/quoter.php';
 
     $items    = $args['items'] ?? [];
-    $clientId = 1;
+    $clientId = obtenerClienteActual() ?? 1;
 
     if (empty($items)) {
         return ['status' => 'error', 'mensaje' => 'No se especificaron productos para cotizar.'];
@@ -450,7 +499,7 @@ function ejecutarBuscarProducto(array $args, string $phone, PDO $pdo): array {
     require_once __DIR__ . '/catalog.php';
 
     $query    = $args['query'] ?? '';
-    $clientId = 1; // TODO: obtener dinámicamente si es multi-cliente
+    $clientId = obtenerClienteActual() ?? 1;
 
     if ($query === '') {
         return ['status' => 'error', 'mensaje' => 'No se proporcionó término de búsqueda.'];

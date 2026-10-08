@@ -57,19 +57,8 @@ if (function_exists('fastcgi_finish_request')) {
 }
 
 // ============================================================================
-// EJECUTAR EL WORKER EN BACKGROUND
+// EJECUTAR EL WORKER EN BACKGROUND (O DIRECTAMENTE)
 // ============================================================================
-$phpBin = '/usr/bin/php';
-$logDestino = ($worker === 'ia')
-    ? '/home/muuk9x7m9to5/public_html/cualify/worker_ia.log'
-    : '/home/muuk9x7m9to5/public_html/cualify/worker.log';
-
-// Ejecutar con nice y nohup para no bloquear
-$cmd = sprintf(
-    'nice -n 19 %s %s >> %s 2>&1 &',
-    escapeshellcmd($phpBin),
-    escapeshellcmd($comandos[$worker]),
-    escapeshellcmd($logDestino)
-);
-
-exec($cmd);
+$_GET['job'] = $worker;
+$_GET['token'] = $tokenEsperado;
+require_once __DIR__ . '/cron_runner.php';

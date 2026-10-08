@@ -10,7 +10,9 @@ $secciones = [
     ['/dashboard',     'Dashboard',       'bi-speedometer2'],
     ['/leads',         'Leads',           'bi-people'],
     ['/conversations', 'Conversaciones',  'bi-chat-dots'],
+    ['/outreach',      'Iniciar Chat',    'bi-send-fill'],
     ['/pagespeed',     'Rendimiento',     'bi-speedometer'],
+    ['/clients',       'Clientes',        'bi-building'],
 ];
 
 $actual = parse_url($_SERVER['REQUEST_URI'] ?? '/', PHP_URL_PATH) ?: '/';

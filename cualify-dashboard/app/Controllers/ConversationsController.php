@@ -29,7 +29,7 @@ final class ConversationsController extends Controller
         $busqueda = trim((string) $request->query('q', ''));
         $pagina   = max(1, (int) $request->query('pagina', '1'));
 
-        $totalHilos = count($leads->telefonosConversando(200, $busqueda));
+        $totalHilos = $leads->conteoTelefonosConversando($busqueda);
         $totalPaginas = max(1, (int) ceil($totalHilos / self::HILOS_POR_PAGINA));
 
         // Una pagina vacia (por ejemplo al borrar el filtro) cae en la ultima.
